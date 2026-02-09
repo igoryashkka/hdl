@@ -1,5 +1,5 @@
 ###############################################################################
-## Copyright (C) 2024-2025 Analog Devices, Inc. All rights reserved.
+## Copyright (C) 2024-2026 Analog Devices, Inc. All rights reserved.
 ### SPDX short identifier: ADIBSD
 ###############################################################################
 
@@ -478,6 +478,7 @@ ad_connect sys_125m_rstgen/ext_reset_in $sys_dma_resetn
 connect_bd_net [get_bd_ports led] [get_bd_pins corundum_hierarchy/ethernet_core/led]
 
 ad_connect corundum_hierarchy/clk_corundum $sys_dma_clk
+ad_ip_parameter corundum_rstgen CONFIG.C_AUX_RESET_HIGH {0}
 ad_connect corundum_rstgen/slowest_sync_clk $sys_dma_clk
 ad_connect corundum_rstgen/ext_reset_in $sys_dma_resetn
 ad_connect clk10_gen/clk_in1 $sys_dma_clk
