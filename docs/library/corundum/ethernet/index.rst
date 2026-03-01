@@ -27,7 +27,7 @@ Features
 
 * Supports 10/100 GbE implementations as follows: 100 GbE by leveraging on the
   Xilinx's CMAC IP core (on the VCU118 evaluation kit) and 10 GbE by using
-  Corundum's support (on the K26-based AD-GMSL2ETH-SL evaluation kit).
+  Corundum's support (on the K26-based ADRD8012-01Z evaluation kit).
 
 Files
 --------------------------------------------------------------------------------

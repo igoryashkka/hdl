@@ -23,7 +23,7 @@ Files
      - Description
    * - :git-hdl:`library/corundum/ethernet_core/ethernet_core_k26.v`
      - Verilog source for the Ethernet Core top module for the K26-based
-       AD-GMSL2ETH-SL evaluation kit.
+       ADRD8012-01Z evaluation kit.
    * - :git-hdl:`library/corundum/ethernet_core/ethernet_ip.tcl`
      - TCL script to generate the Vivado IP-integrator project.
 
