@@ -13,7 +13,6 @@ M_DEPS += ../../../library/common/ad_iobuf.v
 M_DEPS += ../../../library/corundum/scripts/corundum_k26_cfg.tcl
 M_DEPS += ../../../library/corundum/scripts/corundum.tcl
 
-
 EXTERNAL_DEPS += ../../../../corundum/fpga/common/syn/vivado/eth_xcvr_phy_10g_gty_wrapper.tcl
 EXTERNAL_DEPS += ../../../../corundum/fpga/common/syn/vivado/rb_drp.tcl
 EXTERNAL_DEPS += ../../../../corundum/fpga/common/syn/vivado/mqnic_rb_clk_info.tcl
@@ -29,8 +28,12 @@ EXTERNAL_DEPS += ../../../../corundum/fpga/common/syn/vivado/tdma_ber_ch.tcl
 LIB_DEPS += axi_clkgen
 LIB_DEPS += axi_sysid
 LIB_DEPS += axi_pwm_gen
+LIB_DEPS += corundum/application_core
 LIB_DEPS += corundum/corundum_core
 LIB_DEPS += corundum/ethernet/k26
+LIB_DEPS += rtp_engine
+LIB_DEPS += rtp_session_mux
+LIB_DEPS += rtp_video_transm_handler
 LIB_DEPS += sysid_rom
 
 export BOARD := K26
