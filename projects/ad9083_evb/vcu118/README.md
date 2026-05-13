@@ -1,13 +1,13 @@
 <!-- no_no_os -->
 
-# AD9083-EVB/ZCU102 HDL Project
+# AD9083-EVB/VCU118 HDL Project
 
 - VADJ with which it was tested in hardware: 1.8V
 
 ## Building the project
 
 ```
-cd projects/ad9083_evb/zcu102
+cd projects/ad9083_evb/vcu118
 make
 ```
 
@@ -18,6 +18,7 @@ The overwritable parameters from the environment:
 - RX_JESD_L - RX number of lanes per link
 - RX_JESD_M - RX number of converters per link
 - RX_JESD_S - RX number of samples per converter per frame
+- RX_JESD_NP - RX number of bits per sample
 
 ### Example configurations
 
@@ -29,7 +30,7 @@ This specific command is equivalent to running `make` only:
 make RX_JESD_L=4 \
 RX_JESD_M=16 \
 RX_JESD_S=1 \
-RX_JESD_NP=16
+RX_JESD_NP=12
 ```
 
-Corresponding device tree: [zynqmp-zcu102-rev10-ad9083-fmc-ebz.dts](https://github.com/analogdevicesinc/linux/blob/main/arch/arm64/boot/dts/xilinx/zynqmp-zcu102-rev10-ad9083-fmc-ebz.dts)
+Corresponding device tree: [vcu118_ad9083.dts](https://github.com/analogdevicesinc/linux/blob/main/arch/microblaze/boot/dts/vcu118_ad9083.dts)
