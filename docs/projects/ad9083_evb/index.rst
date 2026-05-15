@@ -124,8 +124,26 @@ Clock scheme
 The AD9083 PLL reference clock, the FPGA reference clock and the FPGA global
 clock are provided by the on-board :adi:`AD9528` JESD204B clock generator.
 
-The device clock and the link clock have different sources, and in this case,
-the link clock is double the device clock.
+The device clock and the link clock have different sources and follow the
+formulas below:
+
+.. math::
+
+   Lane Rate = \frac{IQ Sample Rate * M * NP * \frac{10}{8}}{L}
+
+.. math::
+
+   Link Clock = \frac{LaneRate}{40}
+
+.. math::
+
+   Device Clock = Link Clock * \frac{DPW}{TPL\_DPW}
+
+Where DPW is the JESD204B link layer datapath width (4 bytes) and TPL_DPW is
+the transport layer datapath width (OCTETS_PER_BEAT).
+
+ZCU102
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. math::
 
@@ -133,11 +151,26 @@ the link clock is double the device clock.
 
 .. math::
 
-   Link Clock = \frac{LaneRate}{40} = 250Mbps
+   Link Clock = \frac{LaneRate}{40} = 250MHz
 
 .. math::
 
-   Device Clock = \frac{LinkClock}{2} = 125Mbps
+   Device Clock = 250 * \frac{4}{8} = 125MHz
+
+VCU118
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. math::
+
+   Lane Rate = \frac{IQ Sample Rate * M * NP * \frac{10}{8}}{L} = 15Gbps
+
+.. math::
+
+   Link Clock = \frac{LaneRate}{40} = 375MHz
+
+.. math::
+
+   Device Clock = 375 * \frac{4}{6} = 250MHz
 
 CPU/Memory interconnects addresses
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
