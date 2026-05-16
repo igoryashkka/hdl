@@ -1,0 +1,4 @@
+all:
+{
+  pluto.runs/impl_1/system_top.bit
+}

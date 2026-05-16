@@ -1,9 +1,5 @@
-###############################################################################
-## Copyright (C) 2014-2025 Analog Devices, Inc. All rights reserved.
-### SPDX short identifier: ADIBSD
-###############################################################################
-
 # create board design
+
 source $ad_hdl_dir/projects/common/xilinx/adi_fir_filter_bd.tcl
 source $ad_hdl_dir/library/axi_tdd/scripts/axi_tdd.tcl
 
@@ -34,8 +30,6 @@ create_bd_port -dir I spi_sdo_i
 create_bd_port -dir O spi_sdo_o
 create_bd_port -dir I spi_sdi_i
 
-create_bd_port -dir O txdata_o
-create_bd_port -dir I tdd_ext_sync
 
 # instance: sys_ps7
 
@@ -43,33 +37,40 @@ ad_ip_instance processing_system7 sys_ps7
 
 # ps7 settings
 
-ad_ip_parameter sys_ps7 CONFIG.PCW_PRESET_BANK0_VOLTAGE {LVCMOS 1.8V}
+ad_ip_parameter sys_ps7 CONFIG.PCW_PRESET_BANK0_VOLTAGE {LVCMOS 3.3V}
 ad_ip_parameter sys_ps7 CONFIG.PCW_PRESET_BANK1_VOLTAGE {LVCMOS 1.8V}
-ad_ip_parameter sys_ps7 CONFIG.PCW_PACKAGE_NAME clg225
+ad_ip_parameter sys_ps7 CONFIG.PCW_PACKAGE_NAME clg400
+ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_MIO_GPIO_ENABLE 1
+ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_PERIPHERAL_ENABLE 1
+ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_ENET0_IO "MIO 16 .. 27"
+ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_GRP_MDIO_ENABLE 1
+ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_GRP_MDIO_IO "MIO 52 .. 53"
+
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP2 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_EN_CLK1_PORT 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_EN_RST1_PORT 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ 100.0
 ad_ip_parameter sys_ps7 CONFIG.PCW_FPGA1_PERIPHERAL_FREQMHZ 200.0
+
 ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_EMIO_GPIO_ENABLE 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_EMIO_GPIO_IO 18
 ad_ip_parameter sys_ps7 CONFIG.PCW_SPI1_PERIPHERAL_ENABLE 0
 ad_ip_parameter sys_ps7 CONFIG.PCW_I2C0_PERIPHERAL_ENABLE 0
+ad_ip_parameter sys_ps7 CONFIG.PCW_SD0_PERIPHERAL_ENABLE 1
+ad_ip_parameter sys_ps7 CONFIG.PCW_SDIO_PERIPHERAL_FREQMHZ 50
 ad_ip_parameter sys_ps7 CONFIG.PCW_UART1_PERIPHERAL_ENABLE 1
-ad_ip_parameter sys_ps7 CONFIG.PCW_UART1_UART1_IO {MIO 12 .. 13}
+ad_ip_parameter sys_ps7 CONFIG.PCW_UART1_UART1_IO {MIO 8 .. 9}
 ad_ip_parameter sys_ps7 CONFIG.PCW_I2C1_PERIPHERAL_ENABLE 0
 ad_ip_parameter sys_ps7 CONFIG.PCW_QSPI_PERIPHERAL_ENABLE 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_QSPI_GRP_SINGLE_SS_ENABLE 1
-ad_ip_parameter sys_ps7 CONFIG.PCW_SD0_PERIPHERAL_ENABLE 0
 ad_ip_parameter sys_ps7 CONFIG.PCW_SPI0_PERIPHERAL_ENABLE 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_SPI0_SPI0_IO EMIO
 ad_ip_parameter sys_ps7 CONFIG.PCW_TTC0_PERIPHERAL_ENABLE 0
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_FABRIC_INTERRUPT 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_PERIPHERAL_ENABLE 1
-ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_MIO_GPIO_ENABLE 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_MIO_GPIO_IO MIO
-ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_RESET_IO {MIO 52}
+ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_RESET_IO {MIO 46}
 ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_RESET_ENABLE 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_IRQ_F2P_INTR 1
 ad_ip_parameter sys_ps7 CONFIG.PCW_IRQ_F2P_MODE REVERSE
@@ -179,13 +180,19 @@ ad_cpu_interrupt ps-15 mb-15 axi_iic_main/iic2intc_irpt
 
 # ad9361
 
-create_bd_port -dir I rx_clk_in
-create_bd_port -dir I rx_frame_in
-create_bd_port -dir I -from 11 -to 0 rx_data_in
+create_bd_port -dir I rx_clk_in_p
+create_bd_port -dir I rx_clk_in_n
+create_bd_port -dir I rx_frame_in_p
+create_bd_port -dir I rx_frame_in_n
+create_bd_port -dir I -from 5 -to 0 rx_data_in_p
+create_bd_port -dir I -from 5 -to 0 rx_data_in_n
 
-create_bd_port -dir O tx_clk_out
-create_bd_port -dir O tx_frame_out
-create_bd_port -dir O -from 11 -to 0 tx_data_out
+create_bd_port -dir O tx_clk_out_p
+create_bd_port -dir O tx_clk_out_n
+create_bd_port -dir O tx_frame_out_p
+create_bd_port -dir O tx_frame_out_n
+create_bd_port -dir O -from 5 -to 0 tx_data_out_p
+create_bd_port -dir O -from 5 -to 0 tx_data_out_n
 
 create_bd_port -dir O enable
 create_bd_port -dir O txnrx
@@ -196,7 +203,7 @@ create_bd_port -dir I up_txnrx
 
 ad_ip_instance axi_ad9361 axi_ad9361
 ad_ip_parameter axi_ad9361 CONFIG.ID 0
-ad_ip_parameter axi_ad9361 CONFIG.CMOS_OR_LVDS_N 1
+ad_ip_parameter axi_ad9361 CONFIG.CMOS_OR_LVDS_N 0
 ad_ip_parameter axi_ad9361 CONFIG.MODE_1R1T 0
 ad_ip_parameter axi_ad9361 CONFIG.ADC_INIT_DELAY 21
 
@@ -212,7 +219,7 @@ ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_DATA_WIDTH_DEST 64
 
 ad_add_interpolation_filter "tx_fir_interpolator" 8 2 1 {61.44} {7.68} \
                              "$ad_hdl_dir/library/util_fir_int/coefile_int.coe"
-ad_ip_instance ilslice interp_slice
+ad_ip_instance xlslice interp_slice
 ad_ip_instance util_upack2 tx_upack
 
 ad_ip_instance axi_dmac axi_ad9361_adc_dma
@@ -227,17 +234,23 @@ ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_DATA_WIDTH_SRC 64
 
 ad_add_decimation_filter "rx_fir_decimator" 8 2 1 {61.44} {61.44} \
                          "$ad_hdl_dir/library/util_fir_int/coefile_int.coe"
-ad_ip_instance ilslice decim_slice
+ad_ip_instance xlslice decim_slice
 ad_ip_instance util_cpack2 cpack
 
 # connections
 
-ad_connect  rx_clk_in axi_ad9361/rx_clk_in
-ad_connect  rx_frame_in axi_ad9361/rx_frame_in
-ad_connect  rx_data_in axi_ad9361/rx_data_in
-ad_connect  tx_clk_out axi_ad9361/tx_clk_out
-ad_connect  tx_frame_out axi_ad9361/tx_frame_out
-ad_connect  tx_data_out axi_ad9361/tx_data_out
+ad_connect  rx_clk_in_p axi_ad9361/rx_clk_in_p
+ad_connect  rx_clk_in_n axi_ad9361/rx_clk_in_n
+ad_connect  rx_frame_in_p axi_ad9361/rx_frame_in_p
+ad_connect  rx_frame_in_n axi_ad9361/rx_frame_in_n
+ad_connect  rx_data_in_p axi_ad9361/rx_data_in_p
+ad_connect  rx_data_in_n axi_ad9361/rx_data_in_n
+ad_connect  tx_clk_out_p axi_ad9361/tx_clk_out_p
+ad_connect  tx_clk_out_n axi_ad9361/tx_clk_out_n
+ad_connect  tx_frame_out_p axi_ad9361/tx_frame_out_p
+ad_connect  tx_frame_out_n axi_ad9361/tx_frame_out_n
+ad_connect  tx_data_out_p axi_ad9361/tx_data_out_p
+ad_connect  tx_data_out_n axi_ad9361/tx_data_out_n
 ad_connect  enable axi_ad9361/enable
 ad_connect  txnrx axi_ad9361/txnrx
 ad_connect  up_enable axi_ad9361/up_enable
@@ -380,3 +393,4 @@ ad_connect sys_cpu_resetn axi_ad9361_dac_dma/m_src_axi_aresetn
 ad_cpu_interrupt ps-13 mb-13 axi_ad9361_adc_dma/irq
 ad_cpu_interrupt ps-12 mb-12 axi_ad9361_dac_dma/irq
 ad_cpu_interrupt ps-11 mb-11 axi_spi/ip2intc_irpt
+
