@@ -217,6 +217,7 @@ ad_ip_parameter axi_ad9361_dac_dma CONFIG.AXI_SLICE_SRC 0
 ad_ip_parameter axi_ad9361_dac_dma CONFIG.AXI_SLICE_DEST 0
 ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_2D_TRANSFER 0
 ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_DATA_WIDTH_DEST 64
+ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_AXI_ADDR_WIDTH 30
 
 ad_add_interpolation_filter "tx_fir_interpolator" 8 2 1 {61.44} {7.68} \
                              "$ad_hdl_dir/library/util_fir_int/coefile_int.coe"
@@ -227,16 +228,28 @@ ad_ip_instance axi_dmac axi_ad9361_adc_dma
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_TYPE_SRC 2
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_TYPE_DEST 0
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.CYCLIC 0
-ad_ip_parameter axi_ad9361_adc_dma CONFIG.SYNC_TRANSFER_START 0
+ad_ip_parameter axi_ad9361_adc_dma CONFIG.SYNC_TRANSFER_START {true}
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.AXI_SLICE_SRC 0
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.AXI_SLICE_DEST 0
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_2D_TRANSFER 0
 ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_DATA_WIDTH_SRC 64
+ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_AXI_ADDR_WIDTH 30
 
 ad_add_decimation_filter "rx_fir_decimator" 8 2 1 {61.44} {61.44} \
                          "$ad_hdl_dir/library/util_fir_int/coefile_int.coe"
 ad_ip_instance ilslice decim_slice
 ad_ip_instance util_cpack2 cpack
+ad_ip_instance ila rx_debug_ila
+ad_ip_parameter rx_debug_ila CONFIG.C_MONITOR_TYPE Native
+ad_ip_parameter rx_debug_ila CONFIG.C_ENABLE_ILA_AXI_MON false
+ad_ip_parameter rx_debug_ila CONFIG.C_NUM_OF_PROBES 6
+ad_ip_parameter rx_debug_ila CONFIG.C_PROBE0_WIDTH 64
+ad_ip_parameter rx_debug_ila CONFIG.C_PROBE1_WIDTH 1
+ad_ip_parameter rx_debug_ila CONFIG.C_PROBE2_WIDTH 1
+ad_ip_parameter rx_debug_ila CONFIG.C_PROBE3_WIDTH 1
+ad_ip_parameter rx_debug_ila CONFIG.C_PROBE4_WIDTH 1
+ad_ip_parameter rx_debug_ila CONFIG.C_PROBE5_WIDTH 1
+ad_ip_parameter rx_debug_ila CONFIG.C_DATA_DEPTH 1024
 
 # connections
 
@@ -278,13 +291,24 @@ ad_connect axi_ad9361/adc_data_i1 cpack/fifo_wr_data_2
 ad_connect axi_ad9361/adc_enable_q1 cpack/enable_3
 ad_connect axi_ad9361/adc_data_q1 cpack/fifo_wr_data_3
 
-ad_connect cpack/enable_0 rx_fir_decimator/enable_out_0
-ad_connect cpack/enable_1 rx_fir_decimator/enable_out_1
-ad_connect cpack/fifo_wr_data_0 rx_fir_decimator/data_out_0
-ad_connect cpack/fifo_wr_data_1 rx_fir_decimator/data_out_1
+ad_connect rx_fir_decimator/enable_out_0 cpack/enable_0
+ad_connect rx_fir_decimator/enable_out_1 cpack/enable_1
+ad_connect rx_fir_decimator/data_out_0 cpack/fifo_wr_data_0
+ad_connect rx_fir_decimator/data_out_1 cpack/fifo_wr_data_1
 ad_connect rx_fir_decimator/valid_out_0 cpack/fifo_wr_en
 
-ad_connect axi_ad9361_adc_dma/fifo_wr cpack/packed_fifo_wr
+ad_connect cpack/packed_fifo_wr_en axi_ad9361_adc_dma/fifo_wr_en
+ad_connect cpack/packed_fifo_wr_data axi_ad9361_adc_dma/fifo_wr_din
+ad_connect axi_ad9361_adc_dma/fifo_wr_overflow cpack/packed_fifo_wr_overflow
+
+ad_connect axi_ad9361/l_clk rx_debug_ila/clk
+ad_connect cpack/packed_fifo_wr_data rx_debug_ila/probe0
+ad_connect cpack/packed_fifo_wr_en rx_debug_ila/probe1
+ad_connect axi_ad9361_adc_dma/fifo_wr_en rx_debug_ila/probe2
+ad_connect axi_ad9361_adc_dma/fifo_wr_xfer_req rx_debug_ila/probe3
+ad_connect axi_ad9361_adc_dma/fifo_wr_overflow rx_debug_ila/probe4
+ad_connect axi_ad9361_adc_dma/irq rx_debug_ila/probe5
+
 ad_connect axi_ad9361/up_adc_gpio_out decim_slice/Din
 ad_connect rx_fir_decimator/active decim_slice/Dout
 
@@ -339,7 +363,7 @@ ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_connect sys_cpu_clk sys_ps7/S_AXI_HP1_ACLK
 ad_connect axi_ad9361_adc_dma/m_dest_axi sys_ps7/S_AXI_HP1
 
-create_bd_addr_seg -range 0x20000000 -offset 0x00000000 \
+create_bd_addr_seg -range 0x40000000 -offset 0x00000000 \
                     [get_bd_addr_spaces axi_ad9361_adc_dma/m_dest_axi] \
                     [get_bd_addr_segs sys_ps7/S_AXI_HP1/HP1_DDR_LOWOCM] \
                     SEG_sys_ps7_HP1_DDR_LOWOCM
@@ -348,7 +372,7 @@ ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP2 {1}
 ad_connect sys_cpu_clk sys_ps7/S_AXI_HP2_ACLK
 ad_connect axi_ad9361_dac_dma/m_src_axi sys_ps7/S_AXI_HP2
 
-create_bd_addr_seg -range 0x20000000 -offset 0x00000000 \
+create_bd_addr_seg -range 0x40000000 -offset 0x00000000 \
                     [get_bd_addr_spaces axi_ad9361_dac_dma/m_src_axi] \
                     [get_bd_addr_segs sys_ps7/S_AXI_HP2/HP2_DDR_LOWOCM] \
                     SEG_sys_ps7_HP2_DDR_LOWOCM

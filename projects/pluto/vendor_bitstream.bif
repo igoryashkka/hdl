@@ -1,0 +1,4 @@
+all:
+{
+  vendor_system_top.bit
+}
