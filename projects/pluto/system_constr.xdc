@@ -75,6 +75,15 @@ create_clock -name spi0_clk -period 40 [get_pins -hier */EMIOSPI0SCLKO]
 set_input_jitter clk_fpga_0 0.3
 set_input_jitter clk_fpga_1 0.15
 
+# rx_clk (AD9361 DATA_CLK) is asynchronous to all PS7 fabric clocks.
+# CDC paths are handled by synchronizers in axi_ad9361; suppress inter-clock
+# timing analysis here because adi_fir_filter_constr.xdc fires too early (OOC
+# synthesis scope) and its identical set_clock_groups is silently ignored.
+set_clock_groups -asynchronous \
+  -group [get_clocks clk_fpga_0] \
+  -group [get_clocks clk_fpga_1] \
+  -group [get_clocks rx_clk]
+
 set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_rx/i_up_adc_common/up_adc_gpio_out_int_reg[0]/C}]
 set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_tx/i_up_dac_common/up_dac_gpio_out_int_reg[0]/C}]
 

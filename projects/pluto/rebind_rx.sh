@@ -36,6 +36,7 @@ bind_device cf_axi_adc 79020000.cf-ad9361-lpc
 echo '--- after'
 ls /sys/bus/iio/devices/iio:device*/name 2>/dev/null | xargs -r -n1 sh -c 'echo -n "$0="; cat "$0"'
 
+sleep 2
 echo '--- read test'
 rm -f /tmp/rx.bin /tmp/rx.err
 iio_readdev -u local: -T 5000 -b 1024 -s 4096 cf-ad9361-lpc voltage0 > /tmp/rx.bin 2>/tmp/rx.err
