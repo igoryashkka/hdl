@@ -51,6 +51,13 @@ for name_file in /sys/bus/iio/devices/iio:device*/name; do
 	cat "$name_file"
 done
 
+echo '--- side iiod'
+for pid in $(ps | awk '/[i]iod -D -p 30432/ {print $1}'); do
+	kill "$pid" 2>/dev/null || true
+done
+/usr/sbin/iiod -D -p 30432 >/tmp/iiod30432.log 2>&1 &
+echo "IIOD_30432_PID=$!"
+
 echo '--- rx smoke'
 rm -f /tmp/rx_nano.bin /tmp/rx_nano.err
 iio_readdev -u local: -T 5000 -b 4096 -s 16384 cf-ad9361-lpc voltage0 > \
