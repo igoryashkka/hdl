@@ -57,6 +57,9 @@ set_property  -dict {PACKAGE_PIN  Y19 IOSTANDARD LVCMOS25 PULLTYPE PULLUP} [get_
 set_property  -dict {PACKAGE_PIN  W20 IOSTANDARD LVCMOS25} [get_ports spi_clk]
 set_property  -dict {PACKAGE_PIN  V20 IOSTANDARD LVCMOS25} [get_ports spi_mosi]
 set_property  -dict {PACKAGE_PIN  Y18 IOSTANDARD LVCMOS25} [get_ports spi_miso]
+set_property  -dict {PACKAGE_PIN  L14 IOSTANDARD LVCMOS25} [get_ports pl_spi_clk_o]
+set_property  -dict {PACKAGE_PIN  N15 IOSTANDARD LVCMOS25} [get_ports pl_spi_miso]
+set_property  -dict {PACKAGE_PIN  N16 IOSTANDARD LVCMOS25} [get_ports pl_spi_mosi]
 
 create_clock -period 8.000 -name rx_clk [get_ports rx_clk_in]
 
