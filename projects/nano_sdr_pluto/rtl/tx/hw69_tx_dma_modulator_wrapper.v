@@ -33,7 +33,19 @@ module hw69_tx_dma_modulator_wrapper #(
   (* X_INTERFACE_IGNORE = "true" *) output [15:0] tx_q0,
   (* X_INTERFACE_IGNORE = "true" *) output [15:0] tx_i1,
   (* X_INTERFACE_IGNORE = "true" *) output [15:0] tx_q1,
-  (* X_INTERFACE_IGNORE = "true" *) output tx_underflow
+  (* X_INTERFACE_IGNORE = "true" *) output tx_underflow,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_axis_word_lo,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_axis_word_hi,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_current_word_lo,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_current_word_hi,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_state_flags,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_fifo_state,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_accepted_words,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_emitted_bits,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_underflows,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_mod_state,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_tx_samples_lo,
+  (* X_INTERFACE_IGNORE = "true" *) output [31:0] dbg_tx_samples_hi
 );
 
   hw69_tx_dma_modulator_core #(
@@ -59,7 +71,19 @@ module hw69_tx_dma_modulator_wrapper #(
     .tx_q0(tx_q0),
     .tx_i1(tx_i1),
     .tx_q1(tx_q1),
-    .tx_underflow(tx_underflow)
+    .tx_underflow(tx_underflow),
+    .dbg_axis_word_lo(dbg_axis_word_lo),
+    .dbg_axis_word_hi(dbg_axis_word_hi),
+    .dbg_current_word_lo(dbg_current_word_lo),
+    .dbg_current_word_hi(dbg_current_word_hi),
+    .dbg_state_flags(dbg_state_flags),
+    .dbg_fifo_state(dbg_fifo_state),
+    .dbg_accepted_words(dbg_accepted_words),
+    .dbg_emitted_bits(dbg_emitted_bits),
+    .dbg_underflows(dbg_underflows),
+    .dbg_mod_state(dbg_mod_state),
+    .dbg_tx_samples_lo(dbg_tx_samples_lo),
+    .dbg_tx_samples_hi(dbg_tx_samples_hi)
   );
 
 endmodule
