@@ -217,4 +217,68 @@ txp = [[rng.getrandbits(8) for _ in range(n)] for n in (1100, 700)]
 for k, pk in enumerate(txp):
     wr(f"txt_pkt{k}_in.mem", pk, 2)
     wr(f"txt_pkt{k}_exp.mem", [((a & 0xFFFF) << 16) | (b & 0xFFFF) for a, b in tx_ref.tx_frame(pk)], 8)
+
+# ---- Schmidl-Cox detector: TAG -> (snr_db, cfo_hz, lead, paths) ; tag 2 = noise only (no event expected) ----
+import channel_ref, sync_ref, sync_test, rx_test
+_pay, _x = rx_test.make_frame()
+SYNC_CFGS = {1: (15, 6000.0, 777, ((0, 1),)), 2: (None, 0.0, 0, None), 3: (8, -9000.0, 1500, ((0, 1), (20, 0.6)))}
+for tag, (snr, cfo, lead, paths) in SYNC_CFGS.items():
+    if snr is None:
+        rr = np.random.default_rng(9)
+        i_a = np.round(rr.normal(0, 100, 9000)).astype(np.int64); q_a = np.round(rr.normal(0, 100, 9000)).astype(np.int64)
+    else:
+        r = channel_ref.apply_channel(_x, snr_db=snr, cfo_hz=cfo, paths=paths, lead=lead, trail=3000, seed=tag)
+        i_a, q_a = sync_test.adc(r)
+    ev = sync_ref.detect(i_a, q_a)
+    words = [(1 << 32) | ((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(i_a, q_a)]
+    wr(f"syn{tag}_in.mem", words, 9)
+    lines = [1 if ev else 0, ev["n_decl"] if ev else 0, ev["n_best"] if ev else 0, (ev["p_re"] & ((1 << 40) - 1)) if ev else 0, (ev["p_im"] & ((1 << 40) - 1)) if ev else 0]
+    with open(os.path.join(OUT, f"syn{tag}_exp.mem"), "w") as f:
+        for k, v in enumerate(lines):
+            f.write(("%0*x" % (1 if k == 0 else 10, v)) + chr(10))
+    print("sync", tag, len(words), "event" if ev else "no event", ev and (ev["n_decl"], ev["n_best"]))
+
+# ---- RX small blocks: dc_remove (TAG->K), input_scale (TAG->sh), nco_mixer (TAG->inc) ----
+import rx_blocks_ref as rb
+def gapseq(items, pg=0.3, width=1):
+    seq = []
+    for it in items:
+        while rng.random() < pg:
+            seq.append((0, rng.getrandbits(32)))
+        seq.append((1, it))
+    return seq + [(0, 0)] * 12
+DC_K = {1: 10, 2: 4}
+dcx = [rng.randint(-2048, 2047) + 700 for _ in range(1500)] + [32767] * 40 + [-32768] * 40 + [rng.randint(-32768, 32767) for _ in range(300)] + [0] * 100
+for tag, K in DC_K.items():
+    seq = gapseq(dcx)
+    wr(f"dcr{tag}_in.mem", [(v << 16) | (w & 0xFFFF) for v, w in [(a, (b if a else 0)) for a, b in seq]], 5)
+    wr(f"dcr{tag}_exp.mem", [o & 0xFFFF for o in rb.dc_remove(dcx, K)], 4)
+SCL_SH = {1: 0, 2: 3, 3: -3, 4: 7, 5: -8}
+sx = [32767, -32768, 0, 1, -1, 4095, -4096, 2047, -2048] + [rng.randint(-32768, 32767) for _ in range(800)]
+for tag, sh in SCL_SH.items():
+    seq = gapseq(sx)
+    wr(f"isc{tag}_in.mem", [(a << 16) | (b & 0xFFFF if a else 0) for a, b in seq], 5)
+    wr(f"isc{tag}_exp.mem", [o & 0xFFFF for o in rb.input_scale(sx, sh)], 4)
+NCO_INC = {1: 0, 2: 1 << 28, 3: (-123456789) & 0xFFFFFFFF, 4: 0x01234567, 5: (1 << 31)}
+nx = [(32767, -32768), (-32768, 32767), (0, 0), (1000, -1000)] + [(rng.randint(-32768, 32767), rng.randint(-32768, 32767)) for _ in range(1500)]
+for tag, inc in NCO_INC.items():
+    seq = gapseq([(a << 16) | (b & 0xFFFF) for a, b in nx])
+    wr(f"nco{tag}_in.mem", [(v << 32) | (w & 0xFFFFFFFF if v else 0) for v, w in seq], 9)
+    yr, yi = rb.nco_mix([a for a, b in nx], [b for a, b in nx], inc)
+    wr(f"nco{tag}_exp.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(yr, yi)], 8)
+
+# ---- CORDIC vectoring and coarse CFO ----
+import sync_ref as sr
+cv = [(0, 0), (131071, 0), (0, 131071), (-131072, 0), (0, -131072), (-131072, -131072), (131071, 131071), (1, 0), (0, -1), (-1, 0), (-1, -1)]
+cv += [(rng.randint(-131072, 131071), rng.randint(-131072, 131071)) for _ in range(500)]
+cv += [(rng.randint(-50, 50), rng.randint(-50, 50)) for _ in range(60)]
+wr("cor_in.mem", [((x & 0x3FFFF) << 18) | (y & 0x3FFFF) for x, y in cv], 9)
+wr("cor_exp.mem", [sr.cordic_vec(x, y) for x, y in cv], 8)
+pv = [(1 << 17, 0), (0, 1 << 17), (-(1 << 39), 0), ((1 << 39) - 1, (1 << 39) - 1), (-(1 << 39), -(1 << 39)), (200000, -150000)]
+for _ in range(400):
+    mag = rng.randint(17, 39)
+    pv.append((rng.randint(-(1 << mag), (1 << mag) - 1), rng.randint(-(1 << mag), (1 << mag) - 1)))
+pv = [(a, b) if max(abs(a), abs(b)) >= (1 << 16) else (a * 0 + (1 << 17), b) for a, b in pv]
+wr("cfc_in.mem", [((a & ((1 << 40) - 1)) << 40) | (b & ((1 << 40) - 1)) for a, b in pv], 20)
+wr("cfc_exp.mem", [sr.cfo_inc(a, b) for a, b in pv], 8)
 print("OK vectors in", OUT)

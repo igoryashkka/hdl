@@ -37,7 +37,11 @@ LDPC R=5/6 → ≈51 Мбіт/с до накладних витрат (преа�
 | phy_cp_insert (bit-reverse + CP, 3 банки) | ✅ | ✅ | ✅ | буфер |
 | phy_tx_frame_ctrl + phy_tx_top | ✅ | ✅ (tx_ref.tx_frame) | ✅ system, 17536 відліків bit-exact, без розривів | — |
 | LDPC enc/dec | ❌ | ❌ | ❌ | |
-| RX: front-end (scale/DC/IQ/power/AGC), sync (packet det, CFO, NCO, timing), cp_remove, FFT-обгортка, channel est., equalizer, phase tracker, RX top | ❌ | | | |
+| phy_dc_remove, phy_input_scale (AGC gain) | ✅ | ✅ | ✅ | 1 |
+| phy_sync_sc (Schmidl-Cox: детекція, груба синхронізація, P для CFO; 6 DSP) | ✅ | ✅ sync_ref.detect bit-exact | ✅ подія/без події/шум, gaps, reset | ~12 від TRACK_LEN-го відліку |
+| phy_cordic (векторинг, ітеративний) + phy_cfo_coarse (P -> приріст фази NCO) | ✅ | ✅ | ✅ | 25 / 28 |
+| phy_nco_mixer (32-біт NCO, 1024-табл., комплексний міксер) | ✅ | ✅ | ✅ | 7 |
+| RX: window controller, FFT+reorder, channel est., equalizer, phase tracker, RX top | ❌ | | | |
 | System TB + channel model (AWGN/CFO/multipath/Doppler) | ❌ | | | |
 
 Vivado TX-only (із реальним phy_tx_top): LUT 3461, FF 2220, BRAM 9xRAMB36+16xRAMB18, DSP 39; таймінг на l_clk (rx_clk 8 нс, 2R2T = 122.88 МГц):
