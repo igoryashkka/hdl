@@ -27,6 +27,21 @@ def cp_insert(raw_re, raw_im, n_log, cp):
     return nr[idx], ni[idx]
 
 
+def tx_data_symbols(payload):
+    """Mapped QAM points per data symbol (complex ints), shape (nsym, NUM_DATA_SC), and the interleaved word list."""
+    import scrambler_ref, interleaver_ref, qam_ref
+    from phy_params import BYTES_PER_OFDM, NUM_DATA_SC
+    nsym = -(-len(payload) // BYTES_PER_OFDM)
+    data = list(payload) + [0] * (nsym * BYTES_PER_OFDM - len(payload))
+    words = []
+    for b in scrambler_ref.scramble(data):
+        words += [b >> 4, b & 0xF]
+    words = interleaver_ref.interleave(words, 4, 1)
+    bits = np.array([[(w >> (3 - k)) & 1 for k in range(4)] for w in words]).reshape(-1)
+    iq = qam_ref.map_symbols(bits, order=16)
+    return (iq[:, 0] + 1j * iq[:, 1]).reshape(nsym, NUM_DATA_SC), words
+
+
 def tx_frame(payload, gain=16384, mask=0x0FF):
     """Whole TX chain (uncoded mode): bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top."""
     import scrambler_ref, interleaver_ref, qam_ref, ofdm_ref
