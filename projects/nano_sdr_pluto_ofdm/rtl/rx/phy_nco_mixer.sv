@@ -1,7 +1,7 @@
 // Module : phy_nco_mixer   32-bit phase-accumulator NCO + complex mixer: y = x * exp(+j*phase_n), phase_n = n*inc (2^32 = 2*pi).
 //   Phase advances on in_valid; ph_clr (pulse) restarts the phase at 0 for the next sample. For CFO correction the
 //   controller loads inc = -angle(P)/L (python/sync_ref.py).  Table: 1024-entry quarter-wave cos (midpoint sampled, Q1.15),
-//   12 phase bits (spur < -60 dBc, phase error < 0.05 deg).   Output = round-half-up(x*cs >> 15), saturated to 16 bit.
+//   12 phase bits (spur < -60 dBc, phase error < 0.05 deg), table in phy_sincos.   Output = round-half-up(x*cs >> 15), saturated to 16 bit.
 // Latency = 7 cycles (phase reg 1, table 1, quadrant mux 1, phy_complex_mult 4); throughput 1 sample/cycle, valid-gated phase.
 // DSP: 4.  BRAM/LUT: 2 x 1024 x 16 ROM.   Golden: python/rx_blocks_ref.py::nco_mix (bit-exact)
 module phy_nco_mixer #(
@@ -20,14 +20,6 @@ module phy_nco_mixer #(
 );
   localparam int LATENCY = 7;
   localparam int AW = 10;
-
-  // quarter-wave table (constant, evaluated at elaboration)
-  logic signed [15:0] tab [1 << AW];
-  for (genvar i = 0; i < (1 << AW); i++) begin : g_tab
-    localparam real TH = 6.283185307179586 * (i + 0.5) / 4096.0;
-    localparam int  CV = $rtoi($floor($cos(TH) * 32767.0 + 0.5));
-    assign tab[i] = 16'(CV);
-  end
 
   // ---- stage 0: phase accumulator
   logic [31:0]  ph;
@@ -49,33 +41,13 @@ module phy_nco_mixer #(
     end
   end
 
-  // ---- stage 1: table lookup (two reads: t[a] and t[1023-a])
-  logic signed [15:0] t1, tr1;
-  logic [1:0]  quad1;
-  logic        v1;
-  logic signed [W-1:0] i1, q1;
-  wire  [AW-1:0] a0 = idx0[AW-1:0];
-  always_ff @(posedge clk) begin
-    t1    <= tab[a0];
-    tr1   <= tab[AW'((1 << AW) - 1) - a0];
-    quad1 <= idx0[11:10];
-    i1 <= i0; q1 <= q0;
-    if (rst) v1 <= 1'b0; else v1 <= v0;
-  end
-
-  // ---- stage 2: quadrant mapping
+  // ---- stages 1-2: sin/cos table (phy_sincos, 2 cycles) with the data delayed alongside
   logic signed [15:0] c2, s2;
   logic        v2;
-  logic signed [W-1:0] i2, q2;
+  logic signed [W-1:0] i1, q1, i2, q2;
+  phy_sincos u_sc (.clk, .rst, .in_valid(v0), .idx(idx0), .out_valid(v2), .cos_o(c2), .sin_o(s2));
   always_ff @(posedge clk) begin
-    case (quad1)
-      2'd0: begin c2 <= t1;   s2 <= tr1;  end
-      2'd1: begin c2 <= -tr1; s2 <= t1;   end
-      2'd2: begin c2 <= -t1;  s2 <= -tr1; end
-      default: begin c2 <= tr1; s2 <= -t1; end
-    endcase
-    i2 <= i1; q2 <= q1;
-    if (rst) v2 <= 1'b0; else v2 <= v1;
+    i1 <= i0; q1 <= q0; i2 <= i1; q2 <= q1;
   end
 
   // ---- stages 3..6: complex multiplier (x * (c + j s))

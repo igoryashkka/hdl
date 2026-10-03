@@ -24,4 +24,14 @@ for c in "1 0" "2 3" "3 -3" "4 7" "5 -8"; do set -- $c; run tb_phy_input_scale "
 for c in "1 0" "2 268435456" "3 -123456789" "4 19088743" "5 -2147483648"; do set -- $c; run tb_phy_nco_mixer "TAG=$1 INC=$2"; done
 run tb_phy_cordic
 run tb_phy_cfo_coarse
+run tb_phy_rx_window "N=16 SYM=21 NWIN=3"
+run tb_phy_rx_window "N=2048 SYM=2192 NWIN=3"
+for c in "1 4 15" "2 4 0" "3 11 15"; do set -- $c; run tb_phy_rx_fft "TAG=$1 N_LOG=$2 MASK=$3"; done
+run tb_phy_bin_select
+run tb_phy_channel_estimator
+run tb_phy_equalizer
+run tb_phy_phase_tracker
+run tb_phy_rx_decode
+run tb_phy_rx_pkt_out
+run tb_phy_rx_top
 exit $fail

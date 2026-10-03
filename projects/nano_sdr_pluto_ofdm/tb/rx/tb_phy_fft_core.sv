@@ -41,7 +41,7 @@ module tb_phy_fft_core #(parameter int TAG = 1, parameter int N_LOG = 4, paramet
     end
     if (stop_at < 0) begin
       @(posedge clk); #1; in_valid = 0;
-      repeat (20) @(posedge clk);
+      repeat (100) @(posedge clk);
     end
   endtask
 

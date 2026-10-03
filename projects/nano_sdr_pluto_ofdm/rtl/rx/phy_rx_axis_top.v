@@ -1,18 +1,21 @@
 // ***************************************************************************
-// phy_rx_axis_top -- RX-only build wrapper: AD9361 IQ (l_clk domain) -> PHY RX -> packets on a
-// 64-bit AXI-stream (axi_dmac stream source -> DDR -> C packetizer in PS).
-// Plain Verilog on purpose: Vivado needs a Verilog top for a block-design module reference;
-// the SystemVerilog PHY blocks (rtl/rx, rtl/common) live in the same project.
+// phy_rx_axis_top -- RX-only build wrapper: AD9361 IQ (l_clk domain) -> phy_rx_top (OFDM PHY) -> packets on a 64-bit
+// AXI-stream (axi_dmac stream source -> DDR -> C packetizer in the PS).
+// Plain Verilog on purpose (block-design module reference); the SystemVerilog PHY blocks are in the same project.
 //
-// SCAFFOLD: the PHY RX chain is not connected yet. Until then this emits a 2-beat heartbeat record
-// every 2^HB_BITS valid samples so the PL -> DMA -> PS path can be tested on hardware:
-//   beat0 = {32'hOFDM_5258 magic, sample counter[31:0]}   beat1 = {i_in, q_in, drops/flags}
-// Packet record format of the real PHY: see STATUS.md (to be defined together with the C packetizer).
+// Packet record format: see rtl/rx/phy_rx_pkt_out.sv (3 header beats + payload, tlast on the last beat).
+// Configuration (parameters; a register interface can replace them later):
+//   NSYMS  number of OFDM data symbols per packet (payload = NSYMS * 550 bytes), must match the transmitter
+//   RMIN   detector energy gate (|P| and energy in units of the 8-bit-scaled window sum; ~ -16 dB below nominal level)
+//   GAIN_SH digital gain shift before the detector (AGC hook)
+// ADC data: axi_ad9361 adc_data_i0/q0, 16-bit with the 12-bit sample sign-extended.
 // ***************************************************************************
 `timescale 1ns/100ps
 
 module phy_rx_axis_top #(
-  parameter HB_BITS = 20
+  parameter [7:0]  NSYMS   = 8'd2,
+  parameter [31:0] RMIN    = 32'd262144,
+  parameter signed [3:0] GAIN_SH = 4'sd0
 ) (
   input         clk,           // AD9361 l_clk
   input         rst,
@@ -23,35 +26,21 @@ module phy_rx_axis_top #(
   input         m_axis_ready,
   output [63:0] m_axis_data,
   output        m_axis_last,
-  output [15:0] drops
+  output [15:0] status_det_count,
+  output [15:0] status_pkt_count,
+  output [15:0] status_drop_count,
+  output [15:0] status_wd_count,
+  output [7:0]  status_flags,
+  output        status_busy
 );
   reg rst_r = 1'b1;                       // local reset copy (AD9361 reset has a large fanout)
   always @(posedge clk) rst_r <= rst;
 
-  reg [31:0] cnt   = 32'd0;
-  reg [1:0]  beat  = 2'd0;                // 0 idle, 1 send beat0, 2 send beat1
-  reg [15:0] drop_r = 16'd0;
-  reg [31:0] snap  = 32'd0;
-
-  wire hb_hit = in_valid && (cnt[HB_BITS-1:0] == {HB_BITS{1'b1}});
-
-  always @(posedge clk) begin
-    if (rst_r) begin
-      cnt <= 32'd0; beat <= 2'd0; drop_r <= 16'd0; snap <= 32'd0;
-    end else begin
-      if (in_valid) cnt <= cnt + 32'd1;
-      case (beat)
-        2'd0: if (hb_hit) begin snap <= {i_in, q_in}; beat <= 2'd1; end
-        2'd1: if (m_axis_ready) beat <= 2'd2;
-        2'd2: if (m_axis_ready) beat <= 2'd0;
-        default: beat <= 2'd0;
-      endcase
-      if (hb_hit && beat != 2'd0) drop_r <= drop_r + 16'd1;
-    end
-  end
-
-  assign m_axis_valid = (beat != 2'd0);
-  assign m_axis_data  = (beat == 2'd1) ? {32'h4F46444D, cnt} : {snap, 16'd0, drop_r};
-  assign m_axis_last  = (beat == 2'd2);
-  assign drops        = drop_r;
+  phy_rx_top u_phy (
+    .clk(clk), .rst(rst_r), .cfg_nsyms(NSYMS), .cfg_rmin(RMIN), .cfg_gain_sh(GAIN_SH),
+    .in_valid(in_valid), .in_i(i_in), .in_q(q_in),
+    .m_axis_valid(m_axis_valid), .m_axis_ready(m_axis_ready), .m_axis_data(m_axis_data), .m_axis_last(m_axis_last),
+    .st_det_count(status_det_count), .st_pkt_count(status_pkt_count), .st_drop_count(status_drop_count),
+    .st_wd_count(status_wd_count), .st_flags(status_flags), .st_busy(status_busy)
+  );
 endmodule

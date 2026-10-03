@@ -93,3 +93,46 @@ def cfo_inc(p_re, p_im, log2l=10):
     ang = cordic_vec(p_re >> s, p_im >> s)
     ang_s = ang - (1 << 32) if ang >= (1 << 31) else ang
     return (-(ang_s >> log2l)) & 0xFFFFFFFF
+
+
+def detect_events(i, q, hold, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_len=TRACK_LEN):
+    """Like detect(), but returns ALL events; after an event the FSM stays DONE for `hold` samples (models the RX controller
+    re-arming the detector once the previous packet has been processed). Running sums keep going (as in the RTL)."""
+    n_s = len(i)
+    i = np.asarray(i, dtype=np.int64); q = np.asarray(q, dtype=np.int64)
+    qr_h = np.zeros(L, np.int64); qi_h = np.zeros(L, np.int64); e_h = np.zeros(L, np.int64)
+    mc_h = np.zeros(box, np.int64)
+    Pr = Pi = R = S = 0
+    state, t, sbest, nbest, psn = 0, 0, -1, 0, (0, 0)
+    events, n_rearm = [], 0
+    for n in range(n_s):
+        ri, rq = int(i[n]), int(q[n])
+        li, lq = (int(i[n - L]), int(q[n - L])) if n >= L else (0, 0)
+        qr = (li * ri + lq * rq) >> qsh
+        qi = (li * rq - lq * ri) >> qsh
+        e = (ri * ri + rq * rq) >> qsh
+        slot = n % L
+        qr_old, qi_old, e_old = (qr_h[slot], qi_h[slot], e_h[slot]) if n >= L else (0, 0, 0)
+        qr_h[slot], qi_h[slot], e_h[slot] = qr, qi, e
+        Pr += qr - qr_old; Pi += qi - qi_old; R += e - e_old
+        a, b = abs(Pr), abs(Pi)
+        mx, mn = max(a, b), min(a, b)
+        mag = mx + (mn >> 1) - (mn >> 3)
+        cond = (R >= rmin) and (mag > (R >> 1))
+        mc = mag if cond else 0
+        bslot = n % box
+        mc_old = mc_h[bslot] if n >= box else 0
+        mc_h[bslot] = mc
+        S += mc - mc_old
+        if state == 2 and n >= n_rearm:
+            state = 0
+        if state == 0 and cond:
+            state = 1; t = 0; sbest = -1
+        if state == 1:
+            if S > sbest:
+                sbest, nbest, psn = S, n, (Pr, Pi)
+            t += 1
+            if t == track_len:
+                events.append(dict(n_decl=n, n_best=nbest, p_re=psn[0], p_im=psn[1]))
+                state = 2; n_rearm = n + hold
+    return events

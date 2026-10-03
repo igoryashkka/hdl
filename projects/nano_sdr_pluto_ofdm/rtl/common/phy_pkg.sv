@@ -54,11 +54,11 @@ package phy_pkg;
   localparam logic [31:0] CRC32_INIT     = 32'hFFFF_FFFF;
   localparam logic [31:0] CRC32_RESIDUE  = 32'hDEBB_20E3;       // register value after good frame (no final xor)
 
-  // ---- phy_fft_core latency (cycles, continuous input): structural N-1 + pipeline of every stage (2; 6 if D>=4)
+  // ---- phy_fft_core latency (cycles, continuous input): structural N-1 + pipeline of every stage (2; 7 if D>=4)
   function automatic int fft_core_latency(input int n_log);
     int t;
     t = (1 << n_log) - 1;
-    for (int s = 0; s < n_log; s++) t += 1 + ((((1 << (n_log - 1 - s)) >= 4)) ? 5 : 1);
+    for (int s = 0; s < n_log; s++) t += 1 + ((((1 << (n_log - 1 - s)) >= 4)) ? 6 : 1);
     return t;
   endfunction
 

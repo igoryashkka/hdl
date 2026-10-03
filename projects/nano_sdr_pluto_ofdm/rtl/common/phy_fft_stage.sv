@@ -5,7 +5,7 @@
 //   phase1 (last  D of 2D): out = scale(a+b); store scale(a-b)  with a = stored input, b = current input
 // Diff outputs are multiplied by W_{2D}^n (D>=4: complex multiplier + Q1.15 ROM; D==2: exact *(-j) on n=1;
 // D==1: none).  Sum outputs bypass the multiplier through a matching delay.
-// Latency (cycles, additional to the D-sample structural delay): 1 + (D>=4 ? 5 : 1).
+// Latency (cycles, additional to the D-sample structural delay): 1 + (D>=4 ? 6 : 1).
 // Delay memory: D>=4 -> RAM, read-first with 1-sample prefetch (BRAM/dist. RAM); D<4 -> shift regs.
 // Widths: data W signed; twiddle TWW signed Q1.15; SHIFT=1 -> round-half-up >>1 after add/sub, else saturate.
 // Golden: python/fft_ref.py (bit-exact).
@@ -25,7 +25,7 @@ module phy_fft_stage #(
   output logic signed [W-1:0] out_im
 );
   localparam int D       = 1 << LOGD;
-  localparam int MULT_LAT = (D >= 4) ? 5 : 1;   // D>=4: ROM/data reg (1) + phy_complex_mult (4); D<4: output reg
+  localparam int MULT_LAT = (D >= 4) ? 6 : 1;   // D>=4: ROM/data reg (1) + phy_complex_mult (4) + output reg (1); D<4: output reg
   localparam int PW       = (LOGD > 0) ? LOGD : 1;
   localparam int LATENCY  = 1 + MULT_LAT;
 
@@ -43,13 +43,17 @@ module phy_fft_stage #(
   generate
     if (D >= 4) begin : g_ram
       logic [WW-1:0] ram [D] = '{default: '0};
-      wire [PW-1:0] ptr_n = (ptr == PW'(D - 1)) ? '0 : ptr + 1'b1;
-      logic [WW-1:0] rd_q = '0;
-      assign {sr_re, sr_im} = rd_q;
+      // two-step prefetch: the value for step n (stored at step n-D) is read at step n-2 and passes one extra register,
+      // so the RAM output (BRAM clk-to-q) never feeds the butterfly adders directly (needs D >= 4).
+      wire [PW-1:0] ptr_n2 = (ptr >= PW'(D - 2)) ? PW'(ptr + 2 - D) : ptr + 2;
+      logic [WW-1:0] rd_q1 = '0;
+      logic [WW-1:0] rd_q2 = '0;
+      assign {sr_re, sr_im} = rd_q2;
       always_ff @(posedge clk) begin
         if (in_valid) begin
           ram[ptr] <= {st_re, st_im};
-          rd_q     <= ram[ptr_n];
+          rd_q1    <= ram[ptr_n2];
+          rd_q2    <= rd_q1;
         end
       end
     end else begin : g_sr
@@ -162,10 +166,11 @@ module phy_fft_stage #(
         if (rst) for (int k = 0; k < BL; k++) bp_v[k] <= 1'b0;
       end
       // multiplier output appears 4 cycles after its input; bypass has 4 regs -> aligned
-      always_comb begin
-        out_valid = mo_valid | bp_v[BL-1];
-        out_re    = mo_valid ? mo_re : bp_r[BL-1];
-        out_im    = mo_valid ? mo_im : bp_i[BL-1];
+      // output register (breaks the path into the next stage's butterfly adders)
+      always_ff @(posedge clk) begin
+        if (rst) out_valid <= 1'b0; else out_valid <= mo_valid | bp_v[BL-1];
+        out_re <= mo_valid ? mo_re : bp_r[BL-1];
+        out_im <= mo_valid ? mo_im : bp_i[BL-1];
       end
     end else begin : g_triv
       // D==2: element n=1 of the diff stream is multiplied by -j (exact); D==1: pass through. Output registered.

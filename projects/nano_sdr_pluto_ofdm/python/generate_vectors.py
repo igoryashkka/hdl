@@ -281,4 +281,123 @@ for _ in range(400):
 pv = [(a, b) if max(abs(a), abs(b)) >= (1 << 16) else (a * 0 + (1 << 17), b) for a, b in pv]
 wr("cfc_in.mem", [((a & ((1 << 40) - 1)) << 40) | (b & ((1 << 40) - 1)) for a, b in pv], 20)
 wr("cfc_exp.mem", [sr.cfo_inc(a, b) for a, b in pv], 8)
+
+# ---- RX FFT + reorder: TAG -> (n_log, mask, amp) ; frames separated by idle time in the TB, flush = N-1 zeros ----
+import rx_fixed_ref as rfx
+RXF_CFGS = {1: (4, 0xF, 3000), 2: (4, 0x0, 30000), 3: (11, 0x00F, 700)}
+for tag, (nl, mask, amp) in RXF_CFGS.items():
+    N = 1 << nl
+    frs = [(np.array([rng.randint(-amp, amp) for _ in range(N)]), np.array([rng.randint(-amp, amp) for _ in range(N)])) for _ in range(3)]
+    frs[0] = (np.full(N, amp), np.full(N, -amp))
+    exp = []
+    for xr, xi in frs:
+        yr, yi = rfx.rx_fft(xr, xi, mask, nl)
+        exp += [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(yr, yi)]
+    wr(f"rxf{tag}_exp.mem", exp, 8)
+    wr(f"rxf{tag}_in.mem", [((a & 0xFFFF) << 16) | (b & 0xFFFF) for xr, xi in frs for a, b in zip(xr, xi)], 8)
+
+# ---- bin select / channel estimator / equalizer ----
+def pack_w(mr, mi, E):
+    return ((mr & 0xFFFF) << 24) | ((mi & 0xFFFF) << 8) | (E & 0xFF)
+SEL_FRAMES = 2
+import ofdm_ref as _ofr
+sel_in, sel_exp = [], []
+for f in range(SEL_FRAMES):
+    yr = np.array([rng.randint(-32768, 32767) for _ in range(FFT_SIZE)]); yi = np.array([rng.randint(-32768, 32767) for _ in range(FFT_SIZE)])
+    sel_in += [(int(b == 0) << 32) | ((int(yr[b]) & 0xFFFF) << 16) | (int(yi[b]) & 0xFFFF) for b in range(FFT_SIZE)]
+    ar, ai = rfx.select_active(yr, yi)
+    for k in range(NUM_ACTIVE_SC):
+        sel_exp.append((int(_ofr.is_pilot_slot(k)) << 34) | (int(k == 0) << 33) | (int(k == NUM_ACTIVE_SC - 1) << 32) | ((int(ar[k]) & 0xFFFF) << 16) | (int(ai[k]) & 0xFFFF))
+wr("bsl_in.mem", sel_in, 9)
+wr("bsl_exp.mem", sel_exp, 9)
+# channel estimator: Y streams (boundary + random + small + zero), TAG -> frame count
+ce_frames = []
+fr = [(0, 0)] * 40 + [(32767, 32767), (-32768, -32768), (32767, -32768), (1, 0), (0, 1), (-1, -1), (2, -3)] + [(rng.randint(-32768, 32767), rng.randint(-32768, 32767)) for _ in range(600)]     + [(rng.randint(-40, 40), rng.randint(-40, 40)) for _ in range(300)] + [(rng.randint(-3000, 3000), rng.randint(-3000, 3000)) for _ in range(NUM_ACTIVE_SC)]
+fr = fr[:NUM_ACTIVE_SC]
+ce_in, ce_exp = [], []
+yr_a = np.array([a for a, b in fr]); yi_a = np.array([b for a, b in fr])
+mr, mi, E = rfx.chest(yr_a, yi_a)
+wr("cest_exp.mem", [pack_w(int(a), int(b), int(c)) for a, b, c in zip(mr, mi, E)], 10)
+# gaps: valid + {first,last} + data
+seq = []
+for k, (a, b) in enumerate(fr):
+    while rng.random() < 0.25:
+        seq.append((0, rng.getrandbits(34)))
+    seq.append((1, (int(k == 0) << 33) | (int(k == NUM_ACTIVE_SC - 1) << 32) | ((a & 0xFFFF) << 16) | (b & 0xFFFF)))
+seq += [(0, 0)] * 8
+wr("cest_in.mem", [(v << 34) | w for v, w in seq], 9)
+# equalizer: weights from a realistic channel + Y data
+_np = np.random.default_rng(77)
+H = (_np.uniform(0.2, 2.0, NUM_ACTIVE_SC) * np.exp(1j * _np.uniform(-3.14, 3.14, NUM_ACTIVE_SC)))
+lts_s = rfx.lts_sign()
+ylts = np.round(H * 12288 * lts_s * 0.15).astype(complex)
+wmr, wmi, wE = rfx.chest(ylts.real.astype(np.int64), ylts.imag.astype(np.int64))
+wr("eqw_exp.mem", [pack_w(int(a), int(b), int(c)) for a, b, c in zip(wmr, wmi, wE)], 10)
+xs = [(rng.randint(-8000, 8000), rng.randint(-8000, 8000)) for _ in range(NUM_ACTIVE_SC)]
+xs[0] = (32767, -32768); xs[1] = (-32768, 32767); xs[2] = (0, 0)
+yd_r = np.array([a for a, b in xs]); yd_i = np.array([b for a, b in xs])
+eq_r, eq_i = rfx.equalize(yd_r, yd_i, wmr, wmi, wE)
+seq = []
+for k, (a, b) in enumerate(xs):
+    while rng.random() < 0.25:
+        seq.append((0, rng.getrandbits(34)))
+    seq.append((1, (int(k == 0) << 33) | (int(k == NUM_ACTIVE_SC - 1) << 32) | ((a & 0xFFFF) << 16) | (b & 0xFFFF)))
+seq += [(0, 0)] * 12
+wr("eq_in.mem", [(v << 34) | w for v, w in seq], 9)
+wr("eq_exp.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(eq_r, eq_i)], 8)
+
+# ---- phase tracker: frames of equalised active bins (QAM + pilots) rotated by a common phase + noise ----
+_pay2 = [rng.getrandbits(8) for _ in range(2200)]
+qpts, _w = tx_ref.tx_data_symbols(_pay2)
+psg = rfx.pilot_sign()
+thetas = [0.0, np.pi / 2, -np.pi / 2 + 0.001, np.pi - 0.001, 0.37, -2.9]
+pt_in, pt_exp = [], []
+_np2 = np.random.default_rng(5)
+for f, th in enumerate(thetas):
+    sym = np.zeros(NUM_ACTIVE_SC, complex)
+    sym[rfx.DATA_S] = qpts[f % qpts.shape[0]]
+    sym[rfx.PILOT_S] = psg * 12288
+    sym = sym * np.exp(1j * th) + 300 * (_np2.standard_normal(NUM_ACTIVE_SC) + 1j * _np2.standard_normal(NUM_ACTIVE_SC))
+    xr = np.clip(np.round(sym.real), -32768, 32767).astype(np.int64); xi = np.clip(np.round(sym.imag), -32768, 32767).astype(np.int64)
+    yr, yi, ang = rfx.cpe_track(xr, xi)
+    for k in range(NUM_ACTIVE_SC):
+        pt_in.append((int(k == 0) << 33) | (int(k == NUM_ACTIVE_SC - 1) << 32) | ((int(xr[k]) & 0xFFFF) << 16) | (int(xi[k]) & 0xFFFF))
+    for k in rfx.DATA_S:
+        pt_exp.append(((int(yr[k]) & 0xFFFF) << 16) | (int(yi[k]) & 0xFFFF))
+    pt_exp.append(ang)       # angle marker appended after each frame's data (TB separates by position)
+wr("cpe_in.mem", pt_in, 9)
+wr("cpe_exp.mem", pt_exp, 8)
+
+# ---- RX decode back-end (demap -> deinterleave -> hard bits -> descramble): 3 symbols, noisy QAM points ----
+_pay3 = [rng.getrandbits(8) for _ in range(3 * BYTES_PER_OFDM - 37)]
+_q3, _ = tx_ref.tx_data_symbols(_pay3)
+_np3 = np.random.default_rng(11)
+dec_syms = []
+dec_in = []
+for f in range(_q3.shape[0]):
+    pts = _q3[f] + 1600 * (_np3.standard_normal(NUM_DATA_SC) + 1j * _np3.standard_normal(NUM_DATA_SC))
+    xr = np.clip(np.round(pts.real), -32768, 32767).astype(np.int64); xi = np.clip(np.round(pts.imag), -32768, 32767).astype(np.int64)
+    dec_syms.append((xr, xi))
+    dec_in += [(int(k == 0) << 33) | (int(k == NUM_DATA_SC - 1) << 32) | ((int(xr[k]) & 0xFFFF) << 16) | (int(xi[k]) & 0xFFFF) for k in range(NUM_DATA_SC)]
+dec_bytes = rfx.decode_symbols(dec_syms, 3 * BYTES_PER_OFDM)
+wr("dec_in.mem", dec_in, 9)
+wr("dec_exp.mem", dec_bytes, 2)
+print("decode back-end byte errors vs payload (noise 1600):", sum(a != b for a, b in zip(dec_bytes, _pay3)), "of", len(_pay3))
+
+# ---- full RX system test: two packets back to back (1100 bytes = 2 symbols each), different CFO / channel ----
+SYS_NSYMS = 2
+pay_a = [rng.getrandbits(8) for _ in range(SYS_NSYMS * BYTES_PER_OFDM)]
+pay_b = [rng.getrandbits(8) for _ in range(SYS_NSYMS * BYTES_PER_OFDM)]
+xa = np.array([complex(a, b) for a, b in tx_ref.tx_frame(pay_a)]); xb = np.array([complex(a, b) for a, b in tx_ref.tx_frame(pay_b)])
+seg_a = channel_ref.apply_channel(xa, snr_db=35, cfo_hz=9000.0, paths=((0, 1),), lead=1200, trail=9000, seed=21)
+seg_b = channel_ref.apply_channel(xb, snr_db=30, cfo_hz=-7000.0, paths=((0, 1), (9, 0.4j)), lead=0, trail=3000, seed=22)
+i_a, q_a = sync_test.adc(np.concatenate([seg_a, seg_b]))
+wr("rxs_in.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(i_a, q_a)], 8)
+wr("rxs_pay.mem", pay_a + pay_b, 2)
+_di = np.array(rb.dc_remove(i_a, 12)); _dq = np.array(rb.dc_remove(q_a, 12))
+_ev = sync_ref.detect_events(_di, _dq, hold=9000)
+with open(os.path.join(OUT, "rxs_ev.mem"), "w") as f:
+    for e in _ev:
+        f.write(("%08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]))) + chr(10))
+print("rx system stream", len(i_a), "samples; events", [(e["n_decl"], e["n_best"]) for e in _ev])
 print("OK vectors in", OUT)

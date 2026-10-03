@@ -8,7 +8,7 @@
 //   Calibration (python/sync_test.py): sync-symbol start s0 = n_best - 2184 (+-20), LTS FFT window start = n_best + 104.
 // Input: in_valid strobes one complex sample (16-bit signed I/Q; DC must be removed upstream, a DC offset is periodic
 //   and would trigger the detector). Pipeline is fully registered, no stalls, accepts 1 sample/clock.
-// Latency: PIPE_LAT cycles from the TRACK_LEN-th valid sample to ev_valid.   DSP: 6 multipliers (16x16).
+// Latency: ~14 cycles from the TRACK_LEN-th valid sample to ev_valid.   DSP: 6 multipliers (16x16).
 // Widths: P 40 bit, R 40 bit, S 48 bit (no overflow for 16-bit input).   Rounding: arithmetic floor shifts.
 module phy_sync_sc #(
   parameter int L         = 1024,
@@ -108,17 +108,24 @@ module phy_sync_sc #(
     end
   end
 
-  // ---------------------------------------------------------------- S6: |P| components, max/min
+  // ---------------------------------------------------------------- S6a: |P| components ; S6: max/min
+  logic [PW-1:0] a6a, b6a;
+  logic signed [PW-1:0] pr6a, pi6a, r6a;
+  logic          v6a;
+  always_ff @(posedge clk) begin
+    a6a <= P_r[PW-1] ? PW'(-P_r) : PW'(P_r);
+    b6a <= P_i[PW-1] ? PW'(-P_i) : PW'(P_i);
+    pr6a <= P_r; pi6a <= P_i; r6a <= R_s;
+    if (rst) v6a <= 1'b0; else v6a <= v5;
+  end
   logic [PW-1:0] mx6, mn6;
   logic signed [PW-1:0] pr6, pi6, r6;
   logic          v6;
-  wire  [PW-1:0] a_abs = P_r[PW-1] ? PW'(-P_r) : PW'(P_r);
-  wire  [PW-1:0] b_abs = P_i[PW-1] ? PW'(-P_i) : PW'(P_i);
   always_ff @(posedge clk) begin
-    mx6 <= (a_abs > b_abs) ? a_abs : b_abs;
-    mn6 <= (a_abs > b_abs) ? b_abs : a_abs;
-    pr6 <= P_r; pi6 <= P_i; r6 <= R_s;
-    if (rst) v6 <= 1'b0; else v6 <= v5;
+    mx6 <= (a6a > b6a) ? a6a : b6a;
+    mn6 <= (a6a > b6a) ? b6a : a6a;
+    pr6 <= pr6a; pi6 <= pi6a; r6 <= r6a;
+    if (rst) v6 <= 1'b0; else v6 <= v6a;
   end
 
   // ---------------------------------------------------------------- S7: magnitude
@@ -131,17 +138,26 @@ module phy_sync_sc #(
     if (rst) v7 <= 1'b0; else v7 <= v6;
   end
 
-  // ---------------------------------------------------------------- S8: condition and gated magnitude
+  // ---------------------------------------------------------------- S8a: comparisons ; S8: condition and gated magnitude
+  logic          ge8a, gt8a, v8a;
+  logic [PW-1:0] mag8a;
+  logic signed [PW-1:0] pr8a, pi8a;
+  always_ff @(posedge clk) begin
+    ge8a  <= (r7 >= $signed({8'b0, rmin}));
+    gt8a  <= ({1'b0, mag7} > {1'b0, PW'(r7 >>> 1)});
+    mag8a <= mag7; pr8a <= pr7; pi8a <= pi7;
+    if (rst) v8a <= 1'b0; else v8a <= v7;
+  end
   logic [PW-1:0] mc8;
   logic          cond8;
   logic signed [PW-1:0] pr8, pi8;
   logic          v8;
-  wire           cond7 = (r7 >= $signed({8'b0, rmin})) && ({1'b0, mag7} > {1'b0, PW'(r7 >>> 1)});
+  wire           cond7 = ge8a && gt8a;
   always_ff @(posedge clk) begin
     cond8 <= cond7;
-    mc8   <= cond7 ? mag7 : '0;
-    pr8 <= pr7; pi8 <= pi7;
-    if (rst) v8 <= 1'b0; else v8 <= v7;
+    mc8   <= cond7 ? mag8a : '0;
+    pr8 <= pr8a; pi8 <= pi8a;
+    if (rst) v8 <= 1'b0; else v8 <= v8a;
   end
 
   // ---------------------------------------------------------------- S9/S10: box sum of the gated magnitude

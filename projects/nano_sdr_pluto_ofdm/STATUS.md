@@ -41,7 +41,12 @@ LDPC R=5/6 → ≈51 Мбіт/с до накладних витрат (преа�
 | phy_sync_sc (Schmidl-Cox: детекція, груба синхронізація, P для CFO; 6 DSP) | ✅ | ✅ sync_ref.detect bit-exact | ✅ подія/без події/шум, gaps, reset | ~12 від TRACK_LEN-го відліку |
 | phy_cordic (векторинг, ітеративний) + phy_cfo_coarse (P -> приріст фази NCO) | ✅ | ✅ | ✅ | 25 / 28 |
 | phy_nco_mixer (32-біт NCO, 1024-табл., комплексний міксер) | ✅ | ✅ | ✅ | 7 |
-| RX: window controller, FFT+reorder, channel est., equalizer, phase tracker, RX top | ❌ | | | |
+| phy_rx_window (вікна FFT, flush темпом семплів) | ✅ | модель у TB | ✅ | 1 |
+| phy_fft_2048/phy_rx_fft (FFT + реордер, NB=2) | ✅ | ✅ rx_fft bit-exact | ✅ + core_rst, 2 проходи | 2114+ |
+| phy_bin_select, phy_channel_estimator (1/x: таблиця + Ньютон), phy_equalizer | ✅ | ✅ chest/equalize bit-exact | ✅ | 1 / 18 / 7 |
+| phy_phase_tracker (CPE з пілотів, CORDIC) | ✅ | ✅ cpe_track bit-exact | ✅ | ~45 від in_last |
+| phy_rx_decode (демапер, деінтерлівер, жорсткі біти, дескремблер), phy_rx_pkt_out (запис DMA) | ✅ | ✅ decode_symbols | ✅ | — |
+| phy_rx_top + контролер (системний TB: 2 пакети, CFO +9/-7 кГц, багатопроменевість, 0 помилок байтів) | ✅ | ✅ cfo_inc/n_best bit-exact | ✅ system | — |
 | System TB + channel model (AWGN/CFO/multipath/Doppler) | ❌ | | | |
 
 Vivado TX-only (із реальним phy_tx_top): LUT 3461, FF 2220, BRAM 9xRAMB36+16xRAMB18, DSP 39; таймінг на l_clk (rx_clk 8 нс, 2R2T = 122.88 МГц):
@@ -70,3 +75,12 @@ latency перевіряється точно (`out_valid == in_valid` затр�
 -> FFT 2048 + реордер -> LS-оцінка каналу з LTS (H = Y*sign(LTS)/A, без ділення) -> w = conj(H)/|H|^2 (конвеєрний 1/x)
 -> еквалайзер X = Y*w -> CPE з 100 пілотів -> демапер -> деінтерлівер -> дескремблер -> пакет у DMA.
 Статус RX RTL: ще не написано (див. таблицю вище).
+
+## Vivado (Z7010, l_clk 8 нс = 125 МГц): обидва білди закриті
+| Білд | WNS | TNS | WHS | THS | DSP | BRAM | FF |
+|---|---|---|---|---|---|---|---|
+| TX-only (phy_tx_top) | +0.704 | 0 | +0.020 | 0 | 55/80 | 18 | 17770 |
+| RX-only (phy_rx_top) | +0.175 | 0 | +0.011 | 0 | **75/80** | 30 | 18834 |
+Весь проєкт (з платформою AD9361/DMA/PS): TX LUT 12831 (73 %), slice 99 %; RX LUT 14912 (85 %), slice **100 %**, DSP 94 %: запасу під LDPC немає, потрібна оптимізація.
+Ресурси самого PHY RX ≈ 9.2k LUT / 62 DSP (до оптимізації еквалайзера). Подальші економії: радикс-2^2 FFT / 3-множникове комплексне множення.
+Формат пакета для DMA — у `rtl/rx/phy_rx_pkt_out.sv` (3 заголовкові beat'и + payload, tlast).
