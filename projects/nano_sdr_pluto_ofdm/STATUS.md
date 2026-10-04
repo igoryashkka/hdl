@@ -7,15 +7,11 @@ nano_sdr_pluto_ofdm/      спільне: rtl/ tb/ python/ sim/ (цей ката
 nano_sdr_pluto_ofdm_tx/   TX-only білд: PS -> DMA(mem->stream) -> PHY TX -> AD9361 DAC     (0x7C420000, irq 12)
 nano_sdr_pluto_ofdm_rx/   RX-only білд: AD9361 ADC -> PHY RX -> DMA(stream->mem) -> PS    (0x7C400000, irq 13)
 ```
-Весь фізичний рівень у PL; у PS іде лише потік пакетів через DMA (64-біт AXI-stream), пакетайзер — програма на C.
+Весь фізичний рівень у PL; у PS іде лише потік пакетів через DMA (64-біт AXI-stream), пакетайзер/логер — програма на C (`sw/plutolink`).
 Жодного IQ по USB. Обидва білди згенеровані з `../nano_sdr_pluto` викиданням зайвого (FIR, ILA, cpack, ADC/DAC DMA, TX/RX піни де можливо).
 У TX-only лишаються RX-піни (rx_clk_in/frame/data): `l_clk` ядра axi_ad9361 береться з DATA_CLK мікросхеми.
-`rtl/rx/phy_rx_axis_top.v` і `rtl/tx/phy_tx_axis_top.v` — **заглушки** (RX: heartbeat-пакет, TX: IQ passthrough),
-замінюються реальним ланцюжком блок за блоком.
-Збірка: `nano_sdr_pluto_ofdm_{rx,tx}/build_vivado.bat` (Vivado 2025.2, ~5 хв).
-Стан (з заглушками PHY): обидва білди проходять синтез+імплементацію+бітстрім+xsa.
-RX-only: WNS +0.787 / TNS 0 / WHS +0.025 / THS 0. TX-only: WNS +0.894 / TNS 0 / WHS +0.016 / THS 0.
-Критичні попередження DRC про DDR (DIFF_SSTL) — штатні для PS7, як у базовому проєкті. На залізі ще не перевірено.
+Обидва білди мають AXI-Lite блок керування/логування `phy_regs_axil` на `0x7C440000` (див. "Bring-up").
+Збірка: `nano_sdr_pluto_ofdm_{rx,tx}/build_vivado.bat` (Vivado 2025.2). На залізі ще не перевірено.
 
 ## Нумерологія (`rtl/common/phy_pkg.sv` ↔ `python/phy_params.py`)
 30.72 MSPS, FFT 2048, df = 15 кГц, CP 144 (символ 2192 відліки, ≈14.01 ксимв/с), 1200 активних піднесучих,
@@ -47,7 +43,9 @@ LDPC R=5/6 → ≈51 Мбіт/с до накладних витрат (преа�
 | phy_phase_tracker (CPE з пілотів, CORDIC) | ✅ | ✅ cpe_track bit-exact | ✅ | ~45 від in_last |
 | phy_rx_decode (демапер, деінтерлівер, жорсткі біти, дескремблер), phy_rx_pkt_out (запис DMA) | ✅ | ✅ decode_symbols | ✅ | — |
 | phy_rx_top + контролер (системний TB: 2 пакети, CFO +9/-7 кГц, багатопроменевість, 0 помилок байтів) | ✅ | ✅ cfo_inc/n_best bit-exact | ✅ system | — |
-| System TB + channel model (AWGN/CFO/multipath/Doppler) | ❌ | | | |
+| System TB + channel model (AWGN/CFO/multipath/Doppler) | ✅ `phy_sim/` | | | |
+| phy_regs_axil (AXI-Lite, 2 клок-домени, snapshot) + обгортки RX/TX | ✅ | — | ✅ `tb_phy_regs_axil`, `tb_phy_rx_axis_top`, `tb_phy_tx_axis_top` | — |
+| phy_rssi_code, EVM-сума з пілотів (phase_tracker `l1_val`), `ev_r` у sync_sc | ✅ | ✅ `rssi_code`, `cpe_track_l1`, `r_best` | ✅ | — |
 
 Vivado TX-only (із реальним phy_tx_top): LUT 3461, FF 2220, BRAM 9xRAMB36+16xRAMB18, DSP 39; таймінг на l_clk (rx_clk 8 нс, 2R2T = 122.88 МГц):
 WNS +0.458 / TNS 0 / WHS +0.009 / THS 0, бітстрім і xsa зібрано. На залізі ще не перевірено.
@@ -74,13 +72,28 @@ latency перевіряється точно (`out_valid == in_valid` затр�
 (**без LTS-кореляції**: залишок таймінгу = лінійна фаза в H; груба похибка -3..+20 відліків при 8 дБ < CP-48-розкид)
 -> FFT 2048 + реордер -> LS-оцінка каналу з LTS (H = Y*sign(LTS)/A, без ділення) -> w = conj(H)/|H|^2 (конвеєрний 1/x)
 -> еквалайзер X = Y*w -> CPE з 100 пілотів -> демапер -> деінтерлівер -> дескремблер -> пакет у DMA.
-Статус RX RTL: ще не написано (див. таблицю вище).
+Статус RX RTL: повний ланцюжок у PL, bit-exact проти Python-моделі (див. таблицю вище).
 
 ## Vivado (Z7010, l_clk 8 нс = 125 МГц): обидва білди закриті
 | Білд | WNS | TNS | WHS | THS | DSP | BRAM | FF |
 |---|---|---|---|---|---|---|---|
-| TX-only (phy_tx_top) | +0.704 | 0 | +0.020 | 0 | 55/80 | 18 | 17770 |
-| RX-only (phy_rx_top) | +0.175 | 0 | +0.011 | 0 | **75/80** | 30 | 18834 |
-Весь проєкт (з платформою AD9361/DMA/PS): TX LUT 12831 (73 %), slice 99 %; RX LUT 14912 (85 %), slice **100 %**, DSP 94 %: запасу під LDPC немає, потрібна оптимізація.
+| TX-only (v0.3.0, з регістрами) | +0.521 | 0 | +0.012 | 0 | 55/80 | 20 | 19021 |
+| RX-only (v0.3.0, з регістрами, DDS/IQ-корекція DAC вимкнені в axi_ad9361) | +0.375 | 0 | +0.011 | 0 | 67/80 | 30 | 16621 |
+Весь проєкт (з платформою AD9361/DMA/PS): TX LUT 13264 (75 %); RX LUT 13148 (75 %), slice 98.9 %, DSP 84 %. Запасу під LDPC на Z010 немає.
+RX-білд: у `axi_ad9361` вимкнено DDS і IQ-корекцію DAC (`DAC_DDS_DISABLE`, `DAC_IQCORRECTION_DISABLE`) — звільнило ≈2k LUT, без цього регістровий блок не вміщався.
 Ресурси самого PHY RX ≈ 9.2k LUT / 62 DSP (до оптимізації еквалайзера). Подальші економії: радикс-2^2 FFT / 3-множникове комплексне множення.
 Формат пакета для DMA — у `rtl/rx/phy_rx_pkt_out.sv` (3 заголовкові beat'и + payload, tlast).
+
+## Bring-up на залізі (v0.3.0): логування, регістри, `plutolink`
+* **Запис пакета v2** (`phy_rx_pkt_out`): beat0 `{A55A, 02, flags, nbytes, seq}`, beat1 `{cfo_inc, n_best}`, beat2 `{angle16, rssi16, evm32}`
+  (rssi = log2-код енергії вікна S-C, evm = сума L1-похибок пілотів після еквалайзера і CPE по символах пакета).
+* **TX-обгортка**: потік DMA = заголовок `{OFTX, nbytes}` + payload (хвіст останнього beat ігнорується); пакети з поганим заголовком відкидаються;
+  мінімальний проміжок між кадрами `GAP_SAMPLES` (RX обробляє один пакет за раз).
+* **Регістри** `0x7C440000` (обидва білди): `0x00` ID (`OFRX`/`OFTX`), `0x04` CTRL (bit0 soft reset, bit1 clear), `0x08` SNAP (запис = знімок
+  16 статусних слів, читати bit0 = готово), `0x10..` конфіг, `0x80..` статус (карти у шапці `phy_rx_axis_top.v` / `phy_tx_axis_top.v`).
+  CDC: конфіг — 2-FF, знімок — handshake через toggle; false-path у XDC на `*u_regs/*_s1_reg*` та `stat_bank_reg`.
+* **Прошивка**: `fw/build_frm.sh` (ROLE=rx|tx, WSL root) + `fw/dts/zynq-nano-sdr-pluto-ofdm-{rx,tx}.dts` (DMA-канали 64-біт stream, видалені вузли відсутнього PL).
+* **Програма**: `sw/plutolink` (ролі tx / rx / diag / selftest), `analyze_logs.py`; опис, формат логів і вимірювань — `sw/plutolink/README.md`.
+* Виправлено: `phy_tx_top.underflow` більше не спрацьовує в паузі між пакетами (прапор `tx_started_out` скидається по закінченню відтворення).
+* Невідоме до першого запуску на залізі: частота `l_clk` (61.44 / 122.88 МГц), поведінка IIO DMA на межі пакета (tlast), формат даних АЦП,
+  діапазони підсилення. Регресія симуляції: 66/66.

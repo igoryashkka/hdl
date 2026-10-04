@@ -10,13 +10,14 @@ module tb_phy_rx_top;
   always #5 clk = ~clk;
   logic [31:0] samples [NS];
   logic [7:0]  payload [NPKT * PBYTES];
-  logic [31:0] ev [NPKT * 2];             // per packet: n_best, cfo_inc
+  logic [31:0] ev [NPKT * 4];             // per packet: n_best, cfo_inc, rssi code, python evm (RTL NCO phase origin differs slightly)
   logic [7:0]  cfg_nsyms = NSYMS;
   logic [31:0] cfg_rmin = 32'd262144;
   logic signed [3:0] cfg_gain_sh = 0;
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   logic [15:0] st_det_count, st_pkt_count, st_drop_count, st_wd_count; logic [7:0] st_flags; logic st_busy;
+  logic [15:0] st_rssi, st_angle, st_seq; logic [31:0] st_evm, st_cfo_inc, st_nbest; logic st_pkt_pulse;
   phy_rx_top dut (.*);
 
   int errors = 0, nbeat = 0, npkt = 0, byte_errs = 0;
@@ -61,13 +62,16 @@ module tb_phy_rx_top;
         logic [63:0] h0;
         h0 = pk[p][0];
         if (pk_len[p] !== NBEATS) begin errors++; $display("pkt %0d: %0d beats (exp %0d)", p, pk_len[p], NBEATS); end
-        if (h0[63:48] !== 16'hA55A || h0[47:40] !== 8'h01) begin errors++; $display("pkt %0d: bad magic/version %016x", p, h0); end
+        if (h0[63:48] !== 16'hA55A || h0[47:40] !== 8'h02) begin errors++; $display("pkt %0d: bad magic/version %016x", p, h0); end
         if (h0[31:16] !== PBYTES) begin errors++; $display("pkt %0d: nbytes %0d", p, h0[31:16]); end
         if (h0[15:0] !== p) begin errors++; $display("pkt %0d: seq %0d", p, h0[15:0]); end
         if (h0[39:32] !== 8'h00) begin errors++; $display("pkt %0d: flags %02x", p, h0[39:32]); end
-        if (pk[p][1] !== {ev[2 * p + 1], ev[2 * p]}) begin
-          errors++; $display("pkt %0d: {cfo_inc,n_best} got %08x/%08x exp %08x/%08x", p, pk[p][1][63:32], pk[p][1][31:0], ev[2 * p + 1], ev[2 * p]);
+        if (pk[p][1] !== {ev[4 * p + 1], ev[4 * p]}) begin
+          errors++; $display("pkt %0d: {cfo_inc,n_best} got %08x/%08x exp %08x/%08x", p, pk[p][1][63:32], pk[p][1][31:0], ev[4 * p + 1], ev[4 * p]);
         end
+        if (pk[p][2][47:32] !== ev[4 * p + 2][15:0]) begin errors++; $display("pkt %0d: rssi code got %04x exp %04x", p, pk[p][2][47:32], ev[4 * p + 2][15:0]); end
+        if (pk[p][2][31:0] > ev[4 * p + 3] + ev[4 * p + 3] / 8 || pk[p][2][31:0] + ev[4 * p + 3] / 8 < ev[4 * p + 3] || ev[4 * p + 3] == 0)
+          begin errors++; $display("pkt %0d: evm got %0d exp ~%0d", p, pk[p][2][31:0], ev[4 * p + 3]); end
         for (int b = 0; b < PBYTES; b++) begin
           logic [7:0] got;
           got = pk[p][3 + b / 8][8 * (b % 8) +: 8];

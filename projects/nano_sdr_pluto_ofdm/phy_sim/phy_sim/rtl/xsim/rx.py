@@ -94,7 +94,9 @@ class RtlSimRxBackend(RxBackend):
             flags = (h0 >> 32) & 0xFF
             raw = b"".join(int(w).to_bytes(8, "little") for w in p[3:])[:nbytes]
             self.payloads.append(raw)
-            pk = {"bytes": raw, "flags": flags, "seq": h0 & 0xFFFF, "header": p[:3]}
+            h2 = p[2]
+            pk = {"bytes": raw, "flags": flags, "seq": h0 & 0xFFFF, "header": p[:3], "version": (h0 >> 40) & 0xFF,
+                  "angle16": (h2 >> 48) & 0xFFFF, "rssi_code": (h2 >> 32) & 0xFFFF, "evm_sum": h2 & 0xFFFFFFFF}
             sl = slice(k * nsyms * refs.P.NUM_DATA_SC, (k + 1) * nsyms * refs.P.NUM_DATA_SC)
             if len(q_all) >= sl.stop:
                 pk["eq"] = q_all[sl].reshape(nsyms, refs.P.NUM_DATA_SC)

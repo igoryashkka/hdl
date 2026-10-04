@@ -4,11 +4,12 @@
 ## PHY RTL is shared: ../nano_sdr_pluto_ofdm/rtl
 ###############################################################################
 set ofdm_rtl_dir [file normalize [file join [file dirname [file normalize [info script]]] .. nano_sdr_pluto_ofdm rtl]]
-foreach ofdm_f {common/phy_pkg.sv common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv common/phy_delay_line.sv common/phy_cordic.sv common/phy_sincos.sv tx/phy_scrambler.sv tx/phy_interleaver.sv tx/phy_cp_insert.sv rx/phy_descrambler.sv rx/phy_qam_demapper.sv rx/phy_dc_remove.sv rx/phy_input_scale.sv rx/phy_sync_sc.sv rx/phy_cfo_coarse.sv rx/phy_nco_mixer.sv rx/phy_rx_window.sv rx/phy_fft_2048.sv rx/phy_rx_fft.sv rx/phy_bin_select.sv rx/phy_channel_estimator.sv rx/phy_equalizer.sv rx/phy_phase_tracker.sv rx/phy_rx_decode.sv rx/phy_rx_pkt_out.sv rx/phy_rx_top.sv rx/phy_rx_axis_top.v} {
+foreach ofdm_f {common/phy_pkg.sv common/phy_regs_axil.v rx/phy_rssi_code.sv common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv common/phy_delay_line.sv common/phy_cordic.sv common/phy_sincos.sv tx/phy_scrambler.sv tx/phy_interleaver.sv tx/phy_cp_insert.sv rx/phy_descrambler.sv rx/phy_qam_demapper.sv rx/phy_dc_remove.sv rx/phy_input_scale.sv rx/phy_sync_sc.sv rx/phy_cfo_coarse.sv rx/phy_nco_mixer.sv rx/phy_rx_window.sv rx/phy_fft_2048.sv rx/phy_rx_fft.sv rx/phy_bin_select.sv rx/phy_channel_estimator.sv rx/phy_equalizer.sv rx/phy_phase_tracker.sv rx/phy_rx_decode.sv rx/phy_rx_pkt_out.sv rx/phy_rx_top.sv rx/phy_rx_axis_top.v} {
   add_files -norecurse [file join $ofdm_rtl_dir $ofdm_f]
 }
 set_property file_type SystemVerilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_*.sv}]
 set_property file_type Verilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *_axis_top.v}]
+set_property file_type Verilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_regs_axil.v}]
 update_compile_order -fileset sources_1
 
 ###############################################################################
@@ -207,6 +208,8 @@ ad_ip_parameter axi_ad9361 CONFIG.ID 0
 ad_ip_parameter axi_ad9361 CONFIG.CMOS_OR_LVDS_N 1
 ad_ip_parameter axi_ad9361 CONFIG.MODE_1R1T 0
 ad_ip_parameter axi_ad9361 CONFIG.ADC_INIT_DELAY 23
+ad_ip_parameter axi_ad9361 CONFIG.DAC_DDS_DISABLE 1
+ad_ip_parameter axi_ad9361 CONFIG.DAC_IQCORRECTION_DISABLE 1
 
 # connections
 
@@ -269,6 +272,7 @@ ad_connect axi_ad9361/adc_dovf GND
 
 ad_cpu_interconnect 0x79020000 axi_ad9361
 ad_cpu_interconnect 0x7C400000 pkt_dma
+ad_cpu_interconnect 0x7C440000 phy_rx
 ad_cpu_interconnect 0x7C430000 axi_spi
 
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}

@@ -70,7 +70,7 @@ and window delay fitted out), RTL latency / throughput / underflow / overflow, o
 
 `rx.compare_with` runs a second RX on the same IQ and checks: packet count and payload (bit exact), detector `n_best` and NCO
 increment `cfo_inc` (**bit exact**), equalised constellation (tolerance: the NCO phase origin differs by a few samples between
-the model and the RTL). Block-level bit-exact checks live in the 63 self-checking testbenches of the RTL project (`phy_sim unit`).
+the model and the RTL). Block-level bit-exact checks live in the 66 self-checking testbenches of the RTL project (`phy_sim unit`).
 
 ## Verified on this machine
 
@@ -81,8 +81,10 @@ the model and the RTL). Block-level bit-exact checks live in the 63 self-checkin
 ## Known limitations / honest notes
 
 * Verilator + cocotb (named in the TZ) are not installed here; xsim with file-driven testbenches is used instead. Cycle-accurate
-  AXI-Lite register access does not exist because the RTL has no register interface yet (configuration = module parameters /
-  testbench generics: `nsyms`, `rmin`, `gain_sh`, `gain`).
+  AXI-Lite register access is not part of the file-driven RTL backend (it simulates `phy_rx_top` / `phy_tx_top`; configuration = testbench
+  generics: `nsyms`, `rmin`, `gain_sh`, `gain`). The register wrappers (`phy_rx_axis_top`, `phy_tx_axis_top`, `phy_regs_axil`) have their own
+  self-checking testbenches (`tb_phy_rx_axis_top`, `tb_phy_tx_axis_top`, `tb_phy_regs_axil`). The RTL backend parses the v2 packet header
+  (`rssi_code`, `evm_sum`, `angle16` in each packet's debug dict).
 * The RTL receiver handles **one packet at a time**: packets must be spaced (`experiment.packet_gap`, default 12000 samples; the
   RTL TX would emit them back to back otherwise and the second packet is lost). Finding the minimum gap is a sweep away.
 * Receiver CFO range is the fractional range only (+-15 kHz); the integer-CFO stage is not implemented in the RTL.

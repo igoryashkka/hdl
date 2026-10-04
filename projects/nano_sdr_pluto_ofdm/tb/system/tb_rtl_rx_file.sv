@@ -21,6 +21,7 @@ module tb_rtl_rx_file #(
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   logic [15:0] st_det_count, st_pkt_count, st_drop_count, st_wd_count; logic [7:0] st_flags; logic st_busy;
+  logic [15:0] st_rssi, st_angle, st_seq; logic [31:0] st_evm, st_cfo_inc, st_nbest; logic st_pkt_pulse;
   phy_rx_top dut (.*);
 
   int fd, cyc = 0, t_first = -1, t_last_beat = 0, nbeat = 0;

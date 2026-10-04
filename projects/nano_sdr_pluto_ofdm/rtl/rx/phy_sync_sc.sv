@@ -28,6 +28,7 @@ module phy_sync_sc #(
   output logic [31:0]        ev_n_best,
   output logic signed [39:0] ev_p_re,
   output logic signed [39:0] ev_p_im,
+  output logic        [39:0] ev_r,          // window energy R at the smoothed peak (RSSI proxy)
   output logic               det_done
 );
   localparam int PW = 40;
@@ -140,12 +141,13 @@ module phy_sync_sc #(
 
   // ---------------------------------------------------------------- S8a: comparisons ; S8: condition and gated magnitude
   logic          ge8a, gt8a, v8a;
+  logic signed [PW-1:0] r8a, r8, r9, r10, r11;
   logic [PW-1:0] mag8a;
   logic signed [PW-1:0] pr8a, pi8a;
   always_ff @(posedge clk) begin
     ge8a  <= (r7 >= $signed({8'b0, rmin}));
     gt8a  <= ({1'b0, mag7} > {1'b0, PW'(r7 >>> 1)});
-    mag8a <= mag7; pr8a <= pr7; pi8a <= pi7;
+    mag8a <= mag7; pr8a <= pr7; pi8a <= pi7; r8a <= r7;
     if (rst) v8a <= 1'b0; else v8a <= v7;
   end
   logic [PW-1:0] mc8;
@@ -156,7 +158,7 @@ module phy_sync_sc #(
   always_ff @(posedge clk) begin
     cond8 <= cond7;
     mc8   <= cond7 ? mag8a : '0;
-    pr8 <= pr8a; pi8 <= pi8a;
+    pr8 <= pr8a; pi8 <= pi8a; r8 <= r8a;
     if (rst) v8 <= 1'b0; else v8 <= v8a;
   end
 
@@ -167,7 +169,7 @@ module phy_sync_sc #(
   logic          cond9, v9;
   logic signed [PW-1:0] pr9, pi9;
   always_ff @(posedge clk) begin
-    mc9 <= SW'(mc8); cond9 <= cond8; pr9 <= pr8; pi9 <= pi8;
+    mc9 <= SW'(mc8); cond9 <= cond8; pr9 <= pr8; pi9 <= pi8; r9 <= r8;
     if (rst) v9 <= 1'b0; else v9 <= v8;
   end
   logic signed [SW:0] dm;
@@ -175,7 +177,7 @@ module phy_sync_sc #(
   logic signed [PW-1:0] pr10, pi10;
   always_ff @(posedge clk) begin
     dm <= (SW+1)'($signed({1'b0, mc9})) - (SW+1)'($signed({1'b0, mcd_raw}));
-    cond10 <= cond9; pr10 <= pr9; pi10 <= pi9;
+    cond10 <= cond9; pr10 <= pr9; pi10 <= pi9; r10 <= r9;
     if (rst) v10 <= 1'b0; else v10 <= v9;
   end
   logic [SW-1:0] S_sum;
@@ -187,7 +189,7 @@ module phy_sync_sc #(
       v11 <= v10;
       if (v10) S_sum <= S_sum + SW'(dm);
     end
-    cond11 <= cond10; pr11 <= pr10; pi11 <= pi10;
+    cond11 <= cond10; pr11 <= pr10; pi11 <= pi10; r11 <= r10;
   end
 
   // ---------------------------------------------------------------- S12: detection FSM (v11 = one evaluation per sample)
@@ -201,6 +203,7 @@ module phy_sync_sc #(
   logic         sbest_none;
   logic [31:0]  nbest;
   logic signed [PW-1:0] psn_r, psn_i;
+  logic [PW-1:0] rsn;
 
   assign det_done = (st == ST_DONE);
 
@@ -208,22 +211,22 @@ module phy_sync_sc #(
     ev_valid <= 1'b0;
     if (rst) begin
       st <= ST_IDLE; nidx <= '0; tcnt <= '0; sbest <= '0; sbest_none <= 1'b1; nbest <= '0;
-      psn_r <= '0; psn_i <= '0;
+      psn_r <= '0; psn_i <= '0; rsn <= '0; ev_r <= '0;
       ev_n_decl <= '0; ev_n_best <= '0; ev_p_re <= '0; ev_p_im <= '0;
     end else begin
       if (rearm) begin st <= ST_IDLE; end
       if (v11) begin
         nidx <= nidx + 1'b1;
         if (st == ST_IDLE && cond11) begin
-          st <= ST_TRACK; tcnt <= 32'd1; sbest <= S_sum; sbest_none <= 1'b0; nbest <= nidx; psn_r <= pr11; psn_i <= pi11;
-          if (TRACK_LEN == 1) begin st <= ST_DONE; ev_valid <= 1'b1; ev_n_decl <= nidx; ev_n_best <= nidx; ev_p_re <= pr11; ev_p_im <= pi11; end
+          st <= ST_TRACK; tcnt <= 32'd1; sbest <= S_sum; sbest_none <= 1'b0; nbest <= nidx; psn_r <= pr11; psn_i <= pi11; rsn <= r11;
+          if (TRACK_LEN == 1) begin st <= ST_DONE; ev_valid <= 1'b1; ev_n_decl <= nidx; ev_n_best <= nidx; ev_p_re <= pr11; ev_p_im <= pi11; ev_r <= r11; end
         end else if (st == ST_TRACK) begin
-          if (S_sum > sbest) begin sbest <= S_sum; nbest <= nidx; psn_r <= pr11; psn_i <= pi11; end
+          if (S_sum > sbest) begin sbest <= S_sum; nbest <= nidx; psn_r <= pr11; psn_i <= pi11; rsn <= r11; end
           tcnt <= tcnt + 1'b1;
           if (tcnt == 32'(TRACK_LEN - 1)) begin
             st <= ST_DONE; ev_valid <= 1'b1; ev_n_decl <= nidx;
-            if (S_sum > sbest) begin ev_n_best <= nidx; ev_p_re <= pr11; ev_p_im <= pi11; end
-            else               begin ev_n_best <= nbest; ev_p_re <= psn_r; ev_p_im <= psn_i; end
+            if (S_sum > sbest) begin ev_n_best <= nidx; ev_p_re <= pr11; ev_p_im <= pi11; ev_r <= r11; end
+            else               begin ev_n_best <= nbest; ev_p_re <= psn_r; ev_p_im <= psn_i; ev_r <= rsn; end
           end
         end
       end

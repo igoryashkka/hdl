@@ -35,7 +35,14 @@ module phy_rx_top
   output logic [15:0]            st_drop_count,
   output logic [15:0]            st_wd_count,
   output logic [7:0]             st_flags,
-  output logic                   st_busy
+  output logic                   st_busy,
+  output logic [15:0]            st_rssi,         // last packet: header fields (valid after the first packet)
+  output logic [31:0]            st_evm,
+  output logic [31:0]            st_cfo_inc,
+  output logic [31:0]            st_nbest,
+  output logic [15:0]            st_angle,
+  output logic [15:0]            st_seq,
+  output logic                   st_pkt_pulse     // one clk pulse when a packet record is committed
 );
   // ===================================================================== front end
   logic sv_i, sv_q; logic signed [IQ_W-1:0] si, sq;
@@ -50,10 +57,11 @@ module phy_rx_top
   logic        rearm;
   logic        ev_valid, det_done;
   logic [31:0] ev_n_decl, ev_n_best;
+  logic [39:0] ev_r;
   logic signed [39:0] ev_p_re, ev_p_im;
   phy_sync_sc u_sync (
     .clk, .rst, .in_valid(dv), .in_i(di), .in_q(dq), .rmin(cfg_rmin), .rearm,
-    .ev_valid, .ev_n_decl, .ev_n_best, .ev_p_re, .ev_p_im, .det_done
+    .ev_valid, .ev_n_decl, .ev_n_best, .ev_p_re, .ev_p_im, .ev_r, .det_done
   );
 
   logic        cfo_start, cfo_busy, cfo_done;
@@ -124,13 +132,28 @@ module phy_rx_top
   logic pt_valid, pt_first, pt_last, pt_angle_valid, pt_busy, pt_overrun;
   logic signed [IQ_W-1:0] pt_re, pt_im;
   logic [31:0] pt_angle, last_angle;
+  logic pt_l1_valid; logic [23:0] pt_l1;
   phy_phase_tracker u_trk (
     .clk, .rst(rst | be_rst), .in_valid(eq_valid), .in_first(eq_first), .in_last(eq_last), .in_re(eq_re), .in_im(eq_im),
     .out_valid(pt_valid), .out_first(pt_first), .out_last(pt_last), .out_re(pt_re), .out_im(pt_im),
-    .angle_o(pt_angle), .angle_valid(pt_angle_valid), .busy(pt_busy), .overrun(pt_overrun)
+    .angle_o(pt_angle), .angle_valid(pt_angle_valid), .busy(pt_busy), .overrun(pt_overrun),
+    .l1_valid(pt_l1_valid), .l1_val(pt_l1)
   );
   always_ff @(posedge clk) begin
     if (rst) last_angle <= '0; else if (pt_angle_valid) last_angle <= pt_angle;
+  end
+
+  // packet EVM proxy: sum of the per-symbol pilot L1 errors, cleared when the window controller is armed
+  logic [31:0] evm_acc;
+  always_ff @(posedge clk) begin
+    if (rst || arm_valid) evm_acc <= '0;
+    else if (pt_l1_valid) evm_acc <= evm_acc + 32'(pt_l1);
+  end
+  // RSSI: log code of the detector window energy at the timing peak, latched at the detection event
+  logic        rs_v; logic [15:0] rs_code, rssi_q;
+  phy_rssi_code u_rssi (.clk, .rst, .in_valid(ev_valid), .in_r(ev_r), .out_valid(rs_v), .code(rs_code));
+  always_ff @(posedge clk) begin
+    if (rst) rssi_q <= '0; else if (rs_v) rssi_q <= rs_code;
   end
 
   logic dc_valid, dc_first, dc_last, il_ovf; logic [7:0] dc_data;
@@ -155,7 +178,7 @@ module phy_rx_top
   wire  [15:0] nbytes_total = 16'(cfg_nsyms) * 16'(BYTES_PER_OFDM);
   phy_rx_pkt_out #(.RAM_BYTES(MAX_SYMS * BYTES_PER_OFDM)) u_pkt (
     .clk, .rst, .wr_en(dc_valid), .wr_addr(wr_addr_cur), .wr_data(dc_data),
-    .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle),
+    .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle), .c_rssi(rssi_q), .c_evm(evm_acc),
     .busy(po_busy), .dropped(po_drop), .pkt_count(po_cnt),
     .m_axis_valid, .m_axis_ready, .m_axis_data, .m_axis_last
   );
@@ -173,6 +196,13 @@ module phy_rx_top
   assign st_flags = flags_q;
   assign st_busy  = (cst != C_IDLE);
   assign st_pkt_count  = po_cnt;
+  assign st_pkt_pulse  = dc_valid & dc_last;
+  always_ff @(posedge clk) begin
+    if (rst) begin st_rssi <= '0; st_evm <= '0; st_cfo_inc <= '0; st_nbest <= '0; st_angle <= '0; st_seq <= '0; end
+    else if (dc_valid && dc_last) begin
+      st_rssi <= rssi_q; st_evm <= evm_acc; st_cfo_inc <= nco_inc; st_nbest <= nbest_q; st_angle <= last_angle[31:16]; st_seq <= po_cnt;
+    end
+  end
   assign st_drop_count = po_drop;
 
   always_ff @(posedge clk) begin

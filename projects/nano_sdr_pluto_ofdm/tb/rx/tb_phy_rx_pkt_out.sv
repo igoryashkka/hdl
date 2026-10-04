@@ -1,12 +1,12 @@
 // Self-checking TB: phy_rx_pkt_out. Packets of 0, 1, 7, 8, 9 and 1100 random bytes are written into the RAM and committed;
-// the AXI-stream (random ready) must carry header beats {A55A,01,flags,nbytes,seq}, {cfo_inc,nbest}, {angle,FFFFFFFF} and the
+// the AXI-stream (random ready) must carry header beats {A55A,01,flags,nbytes,seq}, {cfo_inc,nbest}, {angle[31:16],rssi,evm} and the
 // payload packed LSB-first (zero padded), tlast only on the final beat, stable data/valid while stalled, seq/pkt_count
 // counters, commit during a running transfer dropped (dropped counter), reset between packets.
 module tb_phy_rx_pkt_out;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
   logic wr_en = 0; logic [12:0] wr_addr = 0; logic [7:0] wr_data = 0;
-  logic commit = 0; logic [15:0] c_nbytes = 0; logic [7:0] c_flags = 0; logic [31:0] c_cfo_inc = 0, c_nbest = 0, c_angle = 0;
+  logic commit = 0; logic [15:0] c_nbytes = 0; logic [7:0] c_flags = 0; logic [31:0] c_cfo_inc = 0, c_nbest = 0, c_angle = 0, c_evm = 0; logic [15:0] c_rssi = 0;
   logic busy; logic [15:0] dropped, pkt_count;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   phy_rx_pkt_out dut (.*);
@@ -38,12 +38,12 @@ module tb_phy_rx_pkt_out;
     for (int i = 0; i < n; i++) payload[i] = $urandom;
     for (int i = 0; i < n; i++) begin @(posedge clk); #1; wr_en = 1; wr_addr = i; wr_data = payload[i]; end
     @(posedge clk); #1; wr_en = 0;
-    c_nbytes = n; c_flags = 8'h05; c_cfo_inc = $urandom; c_nbest = $urandom; c_angle = $urandom;
+    c_nbytes = n; c_flags = 8'h05; c_cfo_inc = $urandom; c_nbest = $urandom; c_angle = $urandom; c_rssi = $urandom; c_evm = $urandom;
     nb = 3 + (n + 7) / 8;
     exp_beats = nb;
-    exp_data[0] = {16'hA55A, 8'h01, 8'h05, 16'(n), 16'(seq_exp)};
+    exp_data[0] = {16'hA55A, 8'h02, 8'h05, 16'(n), 16'(seq_exp)};
     exp_data[1] = {c_cfo_inc, c_nbest};
-    exp_data[2] = {c_angle, 32'hFFFF_FFFF};
+    exp_data[2] = {c_angle[31:16], c_rssi, c_evm};
     for (int b = 0; b < (n + 7) / 8; b++) begin
       w = '0;
       for (int k = 0; k < 8; k++) if (b * 8 + k < n) w[8*k +: 8] = payload[b * 8 + k];

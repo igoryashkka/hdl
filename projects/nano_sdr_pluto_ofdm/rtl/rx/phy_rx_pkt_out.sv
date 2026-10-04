@@ -1,9 +1,11 @@
 // Module : phy_rx_pkt_out   packet buffer + AXI-stream (64 bit) output towards axi_dmac (stream -> DDR) for the C packetizer.
 //   Decoded bytes are written through (wr_en, wr_addr, wr_data); `commit` (with meta data) starts the transfer:
-//     beat 0 : {16'hA55A, 8'h01 (record version), flags[7:0], nbytes[15:0], seq[15:0]}
+//     beat 0 : {16'hA55A, 8'h02 (record version), flags[7:0], nbytes[15:0], seq[15:0]}
 //     beat 1 : {cfo_inc[31:0], n_best[31:0]}          (cfo_inc: NCO phase increment, 2^32 = 2*pi per sample;
 //                                                      CFO[Hz] = -inc * fs / 2^32 ;  n_best: sync sample index)
-//     beat 2 : {angle[31:0], 32'hFFFF_FFFF}           (angle: CPE of the last data symbol, 2^32 = 2*pi; reserved word)
+//     beat 2 : {angle[31:16], rssi[15:0], evm[31:0]}  (angle: CPE of the last data symbol, upper 16 bit, 2^16 = 2*pi;
+//                                                      rssi: {pos[5:0], mant[9:0]} log2 code of the S-C window energy;
+//                                                      evm: sum over the data symbols of the pilot L1 error, see phy_phase_tracker)
 //     beat 3 .. : payload, 8 bytes per beat, first byte in bits [7:0], zero padded; tlast on the final beat.
 //   flags: bit0 il_overflow, bit1 tracker overrun, bit2 frame buffer overflow, bit3 late arm (set by the top level).
 //   commit while a previous packet is still streaming is dropped (`dropped` counter).
@@ -23,6 +25,8 @@ module phy_rx_pkt_out #(
   input  logic [31:0] c_cfo_inc,
   input  logic [31:0] c_nbest,
   input  logic [31:0] c_angle,
+  input  logic [15:0] c_rssi,
+  input  logic [31:0] c_evm,
   output logic        busy,
   output logic [15:0] dropped,
   output logic [15:0] pkt_count,
@@ -45,7 +49,8 @@ module phy_rx_pkt_out #(
   st_t st;
   logic [15:0] nbytes, seq;
   logic [7:0]  flags;
-  logic [31:0] cfo_inc, nbest, angle;
+  logic [31:0] cfo_inc, nbest, angle, evm;
+  logic [15:0] rssi;
   logic [63:0] asm;
 
   wire can_load = !m_axis_valid || m_axis_ready;
@@ -55,25 +60,25 @@ module phy_rx_pkt_out #(
     if (rst) begin
       st <= S_IDLE; dropped <= '0; pkt_count <= '0; seq <= '0; m_axis_valid <= 1'b0; m_axis_last <= 1'b0; m_axis_data <= '0;
       base <= '0; gcnt <= '0; asm <= '0;
-      nbytes <= '0; flags <= '0; cfo_inc <= '0; nbest <= '0; angle <= '0;
+      nbytes <= '0; flags <= '0; cfo_inc <= '0; nbest <= '0; angle <= '0; rssi <= '0; evm <= '0;
     end else begin
       if (m_axis_valid && m_axis_ready) begin m_axis_valid <= 1'b0; m_axis_last <= 1'b0; end
       if (commit) begin
         if (!busy) begin
-          nbytes <= c_nbytes; flags <= c_flags; cfo_inc <= c_cfo_inc; nbest <= c_nbest; angle <= c_angle; st <= S_H0;
+          nbytes <= c_nbytes; flags <= c_flags; cfo_inc <= c_cfo_inc; nbest <= c_nbest; angle <= c_angle; rssi <= c_rssi; evm <= c_evm; st <= S_H0;
         end else dropped <= dropped + 1'b1;
       end
       case (st)
         S_H0: if (can_load) begin
           m_axis_valid <= 1'b1; m_axis_last <= 1'b0;
-          m_axis_data  <= {16'hA55A, 8'h01, flags, nbytes, seq};
+          m_axis_data  <= {16'hA55A, 8'h02, flags, nbytes, seq};
           st <= S_H1;
         end
         S_H1: if (can_load) begin
           m_axis_valid <= 1'b1; m_axis_last <= 1'b0; m_axis_data <= {cfo_inc, nbest}; st <= S_H2;
         end
         S_H2: if (can_load) begin
-          m_axis_valid <= 1'b1; m_axis_data <= {angle, 32'hFFFF_FFFF};
+          m_axis_valid <= 1'b1; m_axis_data <= {angle[31:16], rssi, evm};
           base <= '0; gcnt <= '0;
           if (nbytes == 16'd0) begin
             m_axis_last <= 1'b1; st <= S_IDLE; seq <= seq + 1'b1; pkt_count <= pkt_count + 1'b1;

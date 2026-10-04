@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Nano SDR Pluto, OFDM PHY RX-only PL design (hdl: projects/nano_sdr_pluto_ofdm_rx).
+ *  - No TX DMA (0x7c420000), no DDS core (0x79024000), no mathworks IP core: touching an undecoded AXI address hangs a
+ *    Zynq, so the nodes are removed.
+ *  - dma@7c400000 (pkt_dma) is fed by the 64-bit AXI-stream of the OFDM PHY packet output (not by the ADC FIFO). It stays
+ *    attached to cf-ad9361-lpc, so packet records are read from the IIO buffer (see sw/plutolink).
+ *  - The PHY register block (AXI-Lite, 0x7c440000) has no driver: plutolink maps it through /dev/mem.
+ */
+/dts-v1/;
+#include "zynq-pluto-sdr.dtsi"
+
+/ {
+	model = "Nano SDR Pluto (Zynq/AD936x) OFDM PHY RX";
+	compatible = "adi,nano-sdr-pluto", "xlnx,zynq-7000";
+
+	aliases {
+		serial0 = &uart1;
+		spi0 = &qspi;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led0 {
+			label = "led0:green";
+			gpios = <&gpio0 68 0>;
+			linux,default-trigger = "heartbeat";
+		};
+	};
+};
+
+/delete-node/ &tx_dma;
+/delete-node/ &cf_ad9364_dac_core_0;
+/delete-node/ &{/fpga-axi@0/mwipcore@43c00000};
+
+&rx_dma {
+	adi,channels {
+		dma-channel@0 {
+			adi,source-bus-width = <64>;
+			adi,source-bus-type = <1>;	/* AXI stream */
+			adi,destination-bus-width = <64>;
+			adi,destination-bus-type = <0>;
+		};
+	};
+};
+
+/* No TX in this PL: skip the TX digital-interface tuning (it would fail and abort the cf_axi_adc probe). */
+&adc0_ad9364 {
+	adi,digital-interface-tune-skip-mode = <1>;	/* 1 = SKIP TX */
+};

@@ -8,11 +8,11 @@ module tb_phy_sync_sc #(parameter int TAG = 1);
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
   logic [32:0] stim [MAXN];
-  logic [39:0] expd [5];
+  logic [39:0] expd [6];
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic [31:0] rmin = 32'd262144;
   logic rearm = 0;
-  logic ev_valid, det_done; logic [31:0] ev_n_decl, ev_n_best; logic signed [39:0] ev_p_re, ev_p_im;
+  logic ev_valid, det_done; logic [31:0] ev_n_decl, ev_n_best; logic signed [39:0] ev_p_re, ev_p_im; logic [39:0] ev_r;
   phy_sync_sc dut (.*);
 
   int errors = 0, nev = 0, ns = 0;
@@ -28,6 +28,7 @@ module tb_phy_sync_sc #(parameter int TAG = 1);
       if (ev_n_best !== expd[2][31:0]) begin errors++; $display("n_best %0d != %0d", ev_n_best, expd[2][31:0]); end
       if (ev_p_re !== expd[3]) begin errors++; $display("p_re %0h != %0h", ev_p_re, expd[3]); end
       if (ev_p_im !== expd[4]) begin errors++; $display("p_im %0h != %0h", ev_p_im, expd[4]); end
+      if (ev_r !== expd[5]) begin errors++; $display("r_best %0h != %0h", ev_r, expd[5]); end
     end
   end
 

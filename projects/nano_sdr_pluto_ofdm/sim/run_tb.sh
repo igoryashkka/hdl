@@ -8,7 +8,7 @@ ROOT=$(dirname "$SIM")
 TB=$1; shift
 TBF=$(ls "$ROOT"/tb/*/"$TB".sv)
 RTL="$ROOT/rtl/common/phy_pkg.sv"
-for f in "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/tx/*.sv "$ROOT"/rtl/rx/*.sv; do
+for f in "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/tx/*.sv "$ROOT"/rtl/rx/*.sv "$ROOT"/rtl/common/*.v "$ROOT"/rtl/tx/*.v "$ROOT"/rtl/rx/*.v; do
   [ -e "$f" ] && [ "$(basename "$f")" != phy_pkg.sv ] && RTL="$RTL $f"
 done
 mkdir -p "$SIM/work" && rm -rf "$SIM/work/vec" && cp -r "$SIM/vec" "$SIM/work/vec" && cd "$SIM/work" || exit 1

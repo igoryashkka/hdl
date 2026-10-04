@@ -65,3 +65,8 @@ set_property BITSTREAM.CONFIG.USR_ACCESS TIMESTAMP [current_design]
 
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 
+
+# ---- OFDM PHY register block (phy_regs_axil): clock-domain crossings are handshaked / 2-FF synchronised ----
+set_false_path -to   [get_cells -hier -quiet -filter {NAME =~ *u_regs/*_s1_reg*}]
+set_false_path -from [get_cells -hier -quiet -filter {NAME =~ *u_regs/stat_bank_reg*}]
+set_false_path -from [get_cells -hier -quiet -filter {NAME =~ *u_regs/cfg_s2_reg*}]   ;# configuration is static while the PHY runs

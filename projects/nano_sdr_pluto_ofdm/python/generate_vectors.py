@@ -232,7 +232,7 @@ for tag, (snr, cfo, lead, paths) in SYNC_CFGS.items():
     ev = sync_ref.detect(i_a, q_a)
     words = [(1 << 32) | ((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(i_a, q_a)]
     wr(f"syn{tag}_in.mem", words, 9)
-    lines = [1 if ev else 0, ev["n_decl"] if ev else 0, ev["n_best"] if ev else 0, (ev["p_re"] & ((1 << 40) - 1)) if ev else 0, (ev["p_im"] & ((1 << 40) - 1)) if ev else 0]
+    lines = [1 if ev else 0, ev["n_decl"] if ev else 0, ev["n_best"] if ev else 0, (ev["p_re"] & ((1 << 40) - 1)) if ev else 0, (ev["p_im"] & ((1 << 40) - 1)) if ev else 0, ev["r_best"] if ev else 0]
     with open(os.path.join(OUT, f"syn{tag}_exp.mem"), "w") as f:
         for k, v in enumerate(lines):
             f.write(("%0*x" % (1 if k == 0 else 10, v)) + chr(10))
@@ -359,12 +359,13 @@ for f, th in enumerate(thetas):
     sym[rfx.PILOT_S] = psg * 12288
     sym = sym * np.exp(1j * th) + 300 * (_np2.standard_normal(NUM_ACTIVE_SC) + 1j * _np2.standard_normal(NUM_ACTIVE_SC))
     xr = np.clip(np.round(sym.real), -32768, 32767).astype(np.int64); xi = np.clip(np.round(sym.imag), -32768, 32767).astype(np.int64)
-    yr, yi, ang = rfx.cpe_track(xr, xi)
+    yr, yi, ang, l1 = rfx.cpe_track_l1(xr, xi)
     for k in range(NUM_ACTIVE_SC):
         pt_in.append((int(k == 0) << 33) | (int(k == NUM_ACTIVE_SC - 1) << 32) | ((int(xr[k]) & 0xFFFF) << 16) | (int(xi[k]) & 0xFFFF))
     for k in rfx.DATA_S:
         pt_exp.append(((int(yr[k]) & 0xFFFF) << 16) | (int(yi[k]) & 0xFFFF))
     pt_exp.append(ang)       # angle marker appended after each frame's data (TB separates by position)
+    pt_exp.append(l1)        # pilot L1 error
 wr("cpe_in.mem", pt_in, 9)
 wr("cpe_exp.mem", pt_exp, 8)
 
@@ -396,8 +397,24 @@ wr("rxs_in.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(
 wr("rxs_pay.mem", pay_a + pay_b, 2)
 _di = np.array(rb.dc_remove(i_a, 12)); _dq = np.array(rb.dc_remove(q_a, 12))
 _ev = sync_ref.detect_events(_di, _dq, hold=9000)
+def _py_evm(di, dq, e):
+    """python mirror of the RX packet path: sum of the pilot L1 errors over the data symbols (RTL differs by a few NCO samples)."""
+    inc = sync_ref.cfo_inc(e["p_re"], e["p_im"])
+    w0 = e["n_best"] + 104
+    n0 = min(e["n_decl"] + 4, w0)
+    yi, yq = rb.nco_mix(di[n0:], dq[n0:], inc)
+    tot = 0
+    for k in range(1, SYS_NSYMS + 1):
+        a = w0 - n0 + k * SYMBOL_LEN
+        yr, yi2 = rfx.select_active(*rfx.rx_fft(yi[w0 - n0:w0 - n0 + FFT_SIZE], yq[w0 - n0:w0 - n0 + FFT_SIZE]))
+        mr, mi, E = rfx.chest(yr, yi2)
+        dr, di_ = rfx.select_active(*rfx.rx_fft(yi[a:a + FFT_SIZE], yq[a:a + FFT_SIZE]))
+        xr, xi = rfx.equalize(dr, di_, mr, mi, E)
+        tot += rfx.cpe_track_l1(xr, xi)[3]
+    return tot
+
 with open(os.path.join(OUT, "rxs_ev.mem"), "w") as f:
     for e in _ev:
-        f.write(("%08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]))) + chr(10))
+        f.write(("%08x %08x %08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]), sync_ref.rssi_code(e["r_best"]), _py_evm(_di, _dq, e))) + chr(10))
 print("rx system stream", len(i_a), "samples; events", [(e["n_decl"], e["n_best"]) for e in _ev])
 print("OK vectors in", OUT)

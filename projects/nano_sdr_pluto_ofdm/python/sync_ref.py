@@ -32,7 +32,7 @@ def detect(i, q, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_len=TRACK_LEN):
     Pr = Pi = R = S = 0
     state = 0   # 0 idle, 1 track, 2 done
     t = 0
-    sbest = -1; nbest = 0; psn = (0, 0)
+    sbest = -1; nbest = 0; psn = (0, 0); rbest = 0
     for n in range(n_s):
         ri, rq = int(i[n]), int(q[n])
         li, lq = (int(i[n - L]), int(q[n - L])) if n >= L else (0, 0)
@@ -56,10 +56,10 @@ def detect(i, q, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_len=TRACK_LEN):
             state = 1; t = 0; sbest = -1
         if state == 1:
             if S > sbest:
-                sbest, nbest, psn = S, n, (Pr, Pi)
+                sbest, nbest, psn, rbest = S, n, (Pr, Pi), R
             t += 1
             if t == track_len:
-                return dict(n_decl=n, n_best=nbest, p_re=psn[0], p_im=psn[1], r=R, sbest=sbest)
+                return dict(n_decl=n, n_best=nbest, p_re=psn[0], p_im=psn[1], r=R, r_best=rbest, sbest=sbest)
     return None
 
 
@@ -103,7 +103,7 @@ def detect_events(i, q, hold, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_le
     qr_h = np.zeros(L, np.int64); qi_h = np.zeros(L, np.int64); e_h = np.zeros(L, np.int64)
     mc_h = np.zeros(box, np.int64)
     Pr = Pi = R = S = 0
-    state, t, sbest, nbest, psn = 0, 0, -1, 0, (0, 0)
+    state, t, sbest, nbest, psn, rbest = 0, 0, -1, 0, (0, 0), 0
     events, n_rearm = [], 0
     for n in range(n_s):
         ri, rq = int(i[n]), int(q[n])
@@ -130,9 +130,28 @@ def detect_events(i, q, hold, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_le
             state = 1; t = 0; sbest = -1
         if state == 1:
             if S > sbest:
-                sbest, nbest, psn = S, n, (Pr, Pi)
+                sbest, nbest, psn, rbest = S, n, (Pr, Pi), R
             t += 1
             if t == track_len:
-                events.append(dict(n_decl=n, n_best=nbest, p_re=psn[0], p_im=psn[1]))
+                events.append(dict(n_decl=n, n_best=nbest, p_re=psn[0], p_im=psn[1], r_best=rbest))
                 state = 2; n_rearm = n + hold
     return events
+
+
+def rssi_code(r):
+    """16-bit log code of the window energy R (8-bit scaled sum over L samples): {pos[5:0], mant[9:0]} with pos = index of the
+    highest set bit and mant = the 10 bits below it (0 for R == 0).  mean power per sample [LSB^2] ~ R*2^QSH/L."""
+    r = int(r)
+    if r <= 0:
+        return 0
+    pos = r.bit_length() - 1
+    mant = ((r << 10) >> pos) & 0x3FF if pos >= 0 else 0
+    return (pos << 10) | mant
+
+
+def rssi_db_from_code(code):
+    """Mean sample power in dB (relative to 1 LSB^2) from rssi_code(): R*2^QSH/L."""
+    import math
+    pos, mant = code >> 10, code & 0x3FF
+    r = (1 << pos) * (1 + mant / 1024.0)
+    return 10 * math.log10(max(r * (1 << QSH) / L, 1e-9))

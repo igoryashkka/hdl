@@ -245,6 +245,6 @@ module phy_tx_top
   always_ff @(posedge clk) begin
     if (rst) tx_started_out <= 1'b0;
     else if (cp_valid && iq_pull) tx_started_out <= 1'b1;
-    else if (pkt_done) tx_started_out <= 1'b0;
+    else if (pkt_done || (!cp_valid && !ctrl_active)) tx_started_out <= 1'b0;   // also after the tail of the last frame played out
   end
 endmodule

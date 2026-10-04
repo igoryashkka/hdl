@@ -111,6 +111,15 @@ def cpe_track(xr, xi):
     return yr, yi, ang
 
 
+def cpe_track_l1(xr, xi):
+    """cpe_track() plus the pilot error: l1 = sum over the pilots of |Re(Y_p) - sigma_p*A| + |Im(Y_p)| after the rotation
+    (Y = rotated pilot, sigma_p = pilot sign, A = PILOT_AMP).  Golden for the l1 output of phy_phase_tracker."""
+    yr, yi, ang = cpe_track(xr, xi)
+    sg = pilot_sign()
+    l1 = int(np.sum(np.abs(yr[PILOT_S].astype(np.int64) - sg * A_LTS) + np.abs(yi[PILOT_S].astype(np.int64))))
+    return yr, yi, ang, l1
+
+
 def _norm17(a, b):
     m = max(abs(a), abs(b))
     sh = max(0, int(m).bit_length() - 17)

@@ -7,17 +7,17 @@ module tb_phy_phase_tracker;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
   logic [33:0] stim [MAXN];
-  logic [31:0] expd [NF * (ND + 1)];
+  logic [31:0] expd [NF * (ND + 2)];
   logic in_valid = 0, in_first = 0, in_last = 0; logic signed [15:0] in_re = 0, in_im = 0;
-  logic out_valid, out_first, out_last, angle_valid, busy, overrun; logic signed [15:0] out_re, out_im; logic [31:0] angle_o;
+  logic out_valid, out_first, out_last, angle_valid, busy, overrun, l1_valid; logic [23:0] l1_val; logic signed [15:0] out_re, out_im; logic [31:0] angle_o;
   phy_phase_tracker dut (.*);
 
-  int errors = 0, nout = 0, nang = 0, frame = 0;
+  int errors = 0, nout = 0, nang = 0, nl1 = 0, frame = 0;
   bit checking = 0;
   always @(posedge clk) if (checking && !rst) begin
     if (out_valid) begin
       int idx;
-      idx = frame * (ND + 1) + (nout % ND);
+      idx = frame * (ND + 2) + (nout % ND);
       if ({out_re, out_im} !== expd[idx]) begin
         errors++; if (errors < 10) $display("DATA mismatch frame %0d #%0d got %04x/%04x exp %08x", frame, nout % ND, out_re & 16'hFFFF, out_im & 16'hFFFF, expd[idx]);
       end
@@ -26,8 +26,12 @@ module tb_phy_phase_tracker;
       if (nout % ND == 0) frame++;
     end
     if (angle_valid) begin
-      if (angle_o !== expd[nang * (ND + 1) + ND]) begin errors++; $display("ANGLE mismatch frame %0d got %08x exp %08x", nang, angle_o, expd[nang * (ND + 1) + ND]); end
+      if (angle_o !== expd[nang * (ND + 2) + ND]) begin errors++; $display("ANGLE mismatch frame %0d got %08x exp %08x", nang, angle_o, expd[nang * (ND + 2) + ND]); end
       nang++;
+    end
+    if (l1_valid) begin
+      if ({8'd0, l1_val} !== expd[nl1 * (ND + 2) + ND + 1]) begin errors++; $display("L1 mismatch frame %0d got %0d exp %0d", nl1, l1_val, expd[nl1 * (ND + 2) + ND + 1]); end
+      nl1++;
     end
   end
 
@@ -53,6 +57,7 @@ module tb_phy_phase_tracker;
     for (int f = 0; f < NF; f++) play_frame(f);
     if (nout !== NF * ND) begin errors++; $display("outputs %0d != %0d", nout, NF * ND); end
     if (nang !== NF) begin errors++; $display("angles %0d != %0d", nang, NF); end
+    if (nl1 !== NF) begin errors++; $display("l1 pulses %0d != %0d", nl1, NF); end
     if (overrun) begin errors++; $display("overrun flagged"); end
     if (errors == 0) $display("TEST PASSED tb_phy_phase_tracker (%0d symbols, %0d data bins)", NF, nout);
     else $display("TEST FAILED tb_phy_phase_tracker errors=%0d", errors);

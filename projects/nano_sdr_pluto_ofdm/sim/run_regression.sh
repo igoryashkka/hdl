@@ -34,4 +34,7 @@ run tb_phy_phase_tracker
 run tb_phy_rx_decode
 run tb_phy_rx_pkt_out
 run tb_phy_rx_top
+run tb_phy_regs_axil
+run tb_phy_rx_axis_top
+run tb_phy_tx_axis_top
 exit $fail

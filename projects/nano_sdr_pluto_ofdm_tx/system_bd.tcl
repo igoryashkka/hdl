@@ -4,11 +4,12 @@
 ## PHY RTL is shared: ../nano_sdr_pluto_ofdm/rtl
 ###############################################################################
 set ofdm_rtl_dir [file normalize [file join [file dirname [file normalize [info script]]] .. nano_sdr_pluto_ofdm rtl]]
-foreach ofdm_f {common/phy_pkg.sv common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv tx/phy_scrambler.sv tx/phy_qam_mapper.sv tx/phy_interleaver.sv tx/phy_ofdm_mapper.sv tx/phy_pilot_insert.sv tx/phy_preamble_gen.sv tx/phy_ifft_2048.sv tx/phy_tx_scaler.sv tx/phy_cp_insert.sv tx/phy_tx_frame_ctrl.sv tx/phy_tx_top.sv tx/phy_tx_axis_top.v} {
+foreach ofdm_f {common/phy_pkg.sv common/phy_regs_axil.v common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv tx/phy_scrambler.sv tx/phy_qam_mapper.sv tx/phy_interleaver.sv tx/phy_ofdm_mapper.sv tx/phy_pilot_insert.sv tx/phy_preamble_gen.sv tx/phy_ifft_2048.sv tx/phy_tx_scaler.sv tx/phy_cp_insert.sv tx/phy_tx_frame_ctrl.sv tx/phy_tx_top.sv tx/phy_tx_axis_top.v} {
   add_files -norecurse [file join $ofdm_rtl_dir $ofdm_f]
 }
 set_property file_type SystemVerilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_*.sv}]
 set_property file_type Verilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *_axis_top.v}]
+set_property file_type Verilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_regs_axil.v}]
 update_compile_order -fileset sources_1
 
 ###############################################################################
@@ -270,6 +271,7 @@ ad_connect axi_ad9361/adc_dovf GND
 
 ad_cpu_interconnect 0x79020000 axi_ad9361
 ad_cpu_interconnect 0x7C420000 axi_ad9361_dac_dma
+ad_cpu_interconnect 0x7C440000 phy_tx
 ad_cpu_interconnect 0x7C430000 axi_spi
 
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP2 {1}

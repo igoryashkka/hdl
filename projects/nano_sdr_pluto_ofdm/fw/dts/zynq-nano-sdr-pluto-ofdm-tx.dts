@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Nano SDR Pluto, OFDM PHY TX-only PL design (hdl: projects/nano_sdr_pluto_ofdm_tx).
+ *  - No RX DMA (0x7c400000), no mathworks IP core: nodes removed (touching an undecoded AXI address hangs a Zynq). The ADC
+ *    core stays (it is part of axi_ad9361 and is needed for the AD9361 interface tuning), without a DMA stream.
+ *  - dma@7c420000 (axi_ad9361_dac_dma) feeds the OFDM TX PHY through a 64-bit AXI-stream (non-cyclic): packets written to the
+ *    IIO buffer of cf-ad9361-dds-core-lpc (see sw/plutolink). The DDS tones are not used.
+ *  - The PHY register block (AXI-Lite, 0x7c440000) has no driver: plutolink maps it through /dev/mem.
+ */
+/dts-v1/;
+#include "zynq-pluto-sdr.dtsi"
+
+/ {
+	model = "Nano SDR Pluto (Zynq/AD936x) OFDM PHY TX";
+	compatible = "adi,nano-sdr-pluto", "xlnx,zynq-7000";
+
+	aliases {
+		serial0 = &uart1;
+		spi0 = &qspi;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led0 {
+			label = "led0:green";
+			gpios = <&gpio0 68 0>;
+			linux,default-trigger = "heartbeat";
+		};
+	};
+};
+
+/delete-node/ &rx_dma;
+/delete-node/ &{/fpga-axi@0/mwipcore@43c00000};
+
+&cf_ad9364_adc_core_0 {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+};
+
+&tx_dma {
+	adi,channels {
+		dma-channel@0 {
+			adi,source-bus-width = <64>;
+			adi,source-bus-type = <0>;
+			adi,destination-bus-width = <64>;
+			adi,destination-bus-type = <1>;	/* AXI stream */
+		};
+	};
+};
