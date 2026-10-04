@@ -1,0 +1,4 @@
+experiment: {name: timing_offset, seed: 4, lead_samples: 2500}
+payload: {nsyms: 2}
+channel: {snr_db: 30, timing_offset: 20, fractional_delay: 0.4, sfo_ppm: 3}
+criteria: {max_ber: 1.0e-4, max_per: 0, max_evm_percent: 6, max_timing_error_samples: 45}

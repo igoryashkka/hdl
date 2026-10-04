@@ -1,0 +1,10 @@
+experiment: {name: multipath, seed: 5}
+payload: {nsyms: 2}
+channel:
+  snr_db: 30
+  multipath:
+    - {delay: 0, gain_db: 0, phase_deg: 0}
+    - {delay: 12, gain_db: -4, phase_deg: 60}
+    - {delay: 30, gain_db: -9, phase_deg: -110}
+# 3-tap channel with a deep spectral null: uncoded 16-QAM + zero-forcing shows a small residual BER at the weakest subcarriers
+criteria: {max_ber: 5.0e-3, max_per: 1, max_evm_percent: 12, max_channel_est_mse_db: -12}

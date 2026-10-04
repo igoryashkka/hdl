@@ -1,0 +1,14 @@
+experiment: {name: combined, seed: 10, lead_samples: 2000}
+payload: {nsyms: 2}
+channel:
+  snr_db: 28
+  cfo_hz: 5000
+  timing_offset: 15
+  multipath:
+    - {delay: 0, gain_db: 0}
+    - {delay: 14, gain_db: -7, phase_deg: 40}
+  iq_imbalance: {gain_db: 0.3, phase_deg: 2.0}
+  phase_noise: {linewidth_hz: 100}
+  adc: {dc_offset_i: 20, dc_offset_q: 10}
+# the coarse CFO estimate is biased by multipath + phase noise (a few hundred Hz); the PHY tolerates it
+criteria: {max_ber: 5.0e-3, max_per: 1, max_evm_percent: 16, max_cfo_error_hz: 500}

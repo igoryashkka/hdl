@@ -1,0 +1,15 @@
+# TZ section 28: the reference scenario (two packets, CFO, timing offset, multipath, AWGN). Run:
+#   python -m phy_sim run scenarios/full_loopback.yaml          (python TX -> python RX)
+#   python -m phy_sim run scenarios/full_loopback.yaml --tx rtl --rx rtl      (RTL simulation)
+experiment: {name: full_loopback, seed: 11, n_packets: 2, packet_gap: 12000, lead_samples: 1500}
+payload: {nsyms: 2}
+tx: {backend: python}
+rx: {backend: python, mode: fixed}
+channel:
+  snr_db: 30
+  cfo_hz: 2000
+  timing_offset: 20
+  multipath:
+    - {delay: 0, gain_db: 0}
+    - {delay: 11, gain_db: -6, phase_deg: 45}
+criteria: {max_ber: 1.0e-4, max_per: 0, max_evm_percent: 6, max_cfo_error_hz: 100, max_timing_error_samples: 45}

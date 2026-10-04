@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phy_sim"
+version = "0.1.0"
+description = "Python/RTL OFDM PHY validation framework (Python models, Vivado xsim RTL simulation, Pluto hardware)"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "matplotlib", "pyyaml"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+hardware = ["pyadi-iio"]
+
+[project.scripts]
+phy-sim = "phy_sim.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["phy_sim*"]
+
+[tool.pytest.ini_options]
+markers = ["rtl: needs the Vivado simulator (xsim) and runs the real RTL"]
+testpaths = ["tests"]

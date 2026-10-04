@@ -1,0 +1,4 @@
+experiment: {name: iq_imbalance, seed: 7}
+payload: {nsyms: 2}
+channel: {snr_db: 32, iq_imbalance: {gain_db: 0.6, phase_deg: 3.0}}
+criteria: {max_ber: 1.0e-3, max_per: 1, max_evm_percent: 10}

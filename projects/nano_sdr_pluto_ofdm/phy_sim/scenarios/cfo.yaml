@@ -1,0 +1,4 @@
+experiment: {name: cfo, seed: 3}
+payload: {nsyms: 2}
+channel: {snr_db: 30, cfo_hz: 8000}
+criteria: {max_ber: 1.0e-4, max_per: 0, max_evm_percent: 5, max_cfo_error_hz: 100, max_timing_error_samples: 40}

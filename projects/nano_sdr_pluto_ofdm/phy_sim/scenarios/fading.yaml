@@ -1,0 +1,6 @@
+experiment: {name: fading, seed: 6}
+payload: {nsyms: 2}
+channel:
+  snr_db: 30
+  fading: {type: rician, doppler_hz: 20, k_factor_db: 8, delays: [0, 10, 25], powers_db: [0, -6, -12]}
+criteria: {min_packets_received: 1, max_evm_percent: 25}

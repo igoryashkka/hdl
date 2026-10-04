@@ -1,0 +1,13 @@
+# Perfect channel, python TX -> python RX (bit-exact fixed-point model of the RTL receiver)
+experiment: {name: basic, seed: 1}
+payload: {nsyms: 2}
+tx: {backend: python}
+rx: {backend: python, mode: fixed}
+channel:
+  snr_db: 40
+criteria:
+  max_ber: 0
+  max_per: 0
+  max_evm_percent: 3
+  max_cfo_error_hz: 100
+  max_timing_error_samples: 40

@@ -1,0 +1,4 @@
+experiment: {name: dc_offset, seed: 8}
+payload: {nsyms: 2}
+channel: {snr_db: 32, adc: {dc_offset_i: 40, dc_offset_q: -30}}
+criteria: {max_ber: 1.0e-4, max_per: 0, max_evm_percent: 6}

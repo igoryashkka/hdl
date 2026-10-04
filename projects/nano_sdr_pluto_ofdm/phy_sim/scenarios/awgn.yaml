@@ -1,0 +1,4 @@
+experiment: {name: awgn, seed: 2}
+payload: {nsyms: 2}
+channel: {snr_db: 26}
+criteria: {max_ber: 1.0e-3, max_per: 1, max_evm_percent: 8, max_cfo_error_hz: 150, max_timing_error_samples: 40}

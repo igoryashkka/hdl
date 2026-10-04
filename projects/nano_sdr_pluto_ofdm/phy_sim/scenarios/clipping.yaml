@@ -1,0 +1,4 @@
+experiment: {name: clipping, seed: 9}
+payload: {nsyms: 2}
+channel: {snr_db: 32, adc: {bits: 11, rms: 450}}
+criteria: {max_ber: 2.0e-2, max_per: 1, min_packets_received: 1}

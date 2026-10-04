@@ -1,0 +1,7 @@
+# SNR x CFO sweep -> BER / PER / EVM / sync-failure heatmaps:  python -m phy_sim sweep scenarios/cfo_sweep_sweep.yaml
+experiment: {name: cfo_sweep, seed: 20}
+payload: {nsyms: 1}
+trials: 1
+sweep:
+  snr_db: {start: 10, stop: 30, step: 5}
+  cfo_hz: {values: [0, 1000, 5000, 10000, 14000]}
