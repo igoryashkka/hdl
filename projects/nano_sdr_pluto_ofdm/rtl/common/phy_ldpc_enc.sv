@@ -43,10 +43,12 @@ module phy_ldpc_enc
   // column vector (bit r = information bit 60 c + r) and rotation out[r] = in[(r + s) % Z]
   logic [5:0]   e_col, e_sh;
   logic [Z-1:0] cvec, rv;
+  logic [Z-1:0] ucol [LKB];                  // constant slices of the information register (column mux, no variable shifter)
+  always_comb for (int c = 0; c < LKB; c++) for (int r = 0; r < Z; r++) ucol[c][r] = u[LK - 1 - 60 * c - r];
   always_comb begin
     e_col = enc_col(int'(row), int'(ent));
     e_sh  = enc_sh(int'(row), int'(ent));
-    for (int r = 0; r < Z; r++) cvec[r] = u[LK - 1 - 60 * int'(e_col) - r];
+    cvec = ucol[e_col];
     rv = cvec;
     for (int s = 0; s < 6; s++) begin
       logic [Z-1:0] t;

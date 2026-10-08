@@ -74,6 +74,15 @@ module phy_ldpc_dec
     end
   end
 
+  // write pipeline (timing): element positions / data registered one cycle before the RAM write
+  logic        lq_v, lq_sel;
+  logic [5:0]  lq_col, lq_p [4];
+  logic signed [5:0] lq_d [4];
+  always_ff @(posedge clk) begin
+    lq_v <= ld_fire && !rst; lq_sel <= ld_sel; lq_col <= ld_col;
+    for (int j = 0; j < 4; j++) begin lq_p[j] <= ld_p[j]; lq_d[j] <= in_llr[j]; end
+  end
+
   always_ff @(posedge clk) begin
     if (rst) begin
       ld_w <= '0; ld_col <= '0; ld_r0 <= '0; ld_sel <= 1'b0; occ <= 2'b00;
@@ -102,11 +111,11 @@ module phy_ldpc_dec
         always_comb begin
           l_we = 1'b0; l_d = '0;
           for (int j = 0; j < 4; j++)
-            if (ld_fire && ld_sel == 1'(gb) && ld_p[j] == 6'(gp)) begin l_we = 1'b1; l_d = in_llr[j]; end
+            if (lq_v && lq_sel == 1'(gb) && lq_p[j] == 6'(gp)) begin l_we = 1'b1; l_d = lq_d[j]; end
         end
         wire d_we = dw_en && (dec_sel == 1'(gb));
         always_ff @(posedge clk) begin
-          if (l_we)      mem[ld_col] <= LW'(l_d);
+          if (l_we)      mem[lq_col] <= LW'(l_d);
           else if (d_we) mem[dw_col] <= dw_data[gp];
         end
         assign rd_data[gb][gp] = mem[rd_addr[gb]];
@@ -333,21 +342,24 @@ module phy_ldpc_dec
   typedef enum logic [1:0] {O_IDLE, O_RD, O_SHIFT} ost_t;
   ost_t         ost;
   logic [4:0]   o_pair;
-  logic [1:0]   o_cyc;
+  logic [1:0]   o_cyc;                     // 2 bit counter: 0..3
   logic [Z-1:0] h0, h1;
   logic [3:0]   o_byte;
   logic         o_first;
 
-  // sign vector of the addressed column, rotated back to natural order
+  // sign vector of the addressed column: captured raw, then rotated back to natural order one cycle later (timing)
+  logic [Z-1:0] raw_q;
+  logic [5:0]   rotd_q;
   logic [Z-1:0] nat;
+  always_ff @(posedge clk) begin
+    for (int p = 0; p < Z; p++) raw_q[p] <= out_sel ? rd_data[1][p][LW-1] : rd_data[0][p][LW-1];
+    rotd_q <= (coff[out_sel][out_col_r] == 6'd0) ? 6'd0 : 6'(Z) - coff[out_sel][out_col_r];
+  end
   always_comb begin
     logic [Z-1:0] t, u;
-    logic [5:0] off, d;
-    for (int p = 0; p < Z; p++) t[p] = out_sel ? rd_data[1][p][LW-1] : rd_data[0][p][LW-1];
-    off = coff[out_sel][out_col_r];
-    d = (off == 6'd0) ? 6'd0 : 6'(Z) - off;
+    t = raw_q;
     for (int s = 0; s < 6; s++) begin
-      for (int p = 0; p < Z; p++) u[p] = d[s] ? t[(p + (1 << s)) % Z] : t[p];
+      for (int p = 0; p < Z; p++) u[p] = rotd_q[s] ? t[(p + (1 << s)) % Z] : t[p];
       t = u;
     end
     nat = t;
@@ -364,10 +376,11 @@ module phy_ldpc_dec
     end else begin
       case (ost)
         O_IDLE: if (dcd[out_sel]) begin ost <= O_RD; o_pair <= '0; out_col_r <= '0; o_cyc <= '0; o_first <= 1'b1; end
-        O_RD: begin
+        O_RD: begin            // cycle 0: col 2p addressed, raw/offset registered at its end; 1: nat(col 2p) -> h0, col 2p+1 registered; 2: nat(col 2p+1) -> h1
           o_cyc <= o_cyc + 1'b1;
-          if (o_cyc == 2'd0) begin h0 <= nat; out_col_r <= {o_pair, 1'b0} + 6'd1; end
-          else begin h1 <= nat; ost <= O_SHIFT; o_byte <= '0; end
+          if (o_cyc == 2'd0) out_col_r <= {o_pair, 1'b0} + 6'd1;
+          if (o_cyc == 2'd1) h0 <= nat;
+          if (o_cyc == 2'd2) begin h1 <= nat; ost <= O_SHIFT; o_byte <= '0; end
         end
         O_SHIFT: begin
           out_valid <= 1'b1;

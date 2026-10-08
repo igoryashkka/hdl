@@ -4,10 +4,13 @@
 //   Reciprocal: |G|^2 normalised to M in [2^16, 2^17), 256-entry table + one Newton step (y1 = y0*(2 - M*y0)).
 //   The weights are written to an internal RAM (1200 x 40 bit: [39:24]=mr, [23:8]=mi, [7:0]=E) that the equalizer reads
 //   through (rd_en, rd_addr) -> rd_data (1 cycle). `done` pulses when the last weight of the frame has been written.
+//   Side output: lg code of |G|^2 per bin (p*32 + LGT[top 5 fraction bits], -1000 for 0; golden phy2_fixed_ref.chest_lg) in a
+//   12 bit RAM; a mirror copy of the weight RAM + that RAM are read by the MMSE post engine (eng_*), which can rewrite the weights.
 // Latency: 18 cycles from in_valid to the RAM write of the same bin.  Throughput 1 bin/cycle (valid-only).
 // DSP: 6 multipliers (2 squares, M*y0, y0*e, 2 weight products).   Golden: python/rx_fixed_ref.py::chest (bit-exact)
 module phy_channel_estimator
   import phy_pkg::*;
+  import phy_soft_pkg::*;
 (
   input  logic                   clk,
   input  logic                   rst,
@@ -19,7 +22,14 @@ module phy_channel_estimator
   output logic                   done,
   input  logic                   rd_en,
   input  logic [10:0]            rd_addr,
-  output logic [39:0]            rd_data
+  output logic [39:0]            rd_data,
+  // second memory side for the MMSE post engine (phy_mmse_post): read weights + log|G|^2 code, rewrite weights
+  input  logic [10:0]            eng_ra,
+  output logic [39:0]            eng_rw,
+  output logic signed [11:0]     eng_rlg,
+  input  logic                   eng_we,
+  input  logic [10:0]            eng_wa,
+  input  logic [39:0]            eng_wd
 );
   localparam int NA = NUM_ACTIVE_SC;
 
@@ -99,6 +109,12 @@ module phy_channel_estimator
     if (rst) begin vg <= 1'b0; lg <= 1'b0; end else begin vg <= vf; lg <= lf; end
     y0_g <= rec_lut[M_f[15:8]]; M_g <= M_f; s_g <= s_f; z_g <= z_f; gr_g <= gr_f; gi_g <= gi_f; ag <= af;
   end
+  // log code of |G|^2 (aligned with stage G), carried to the RAM write
+  logic signed [11:0] lg_pipe [12];
+  always_ff @(posedge clk) begin
+    lg_pipe[0] <= z_f ? -12'sd1000 : 12'((int'(s_f) + 16) * LGF + int'(LGT_ROM[M_f[15:11]]));
+    for (int i = 1; i < 12; i++) lg_pipe[i] <= lg_pipe[i-1];
+  end
   logic vh, lh; logic [10:0] ah; logic signed [IQ_W-1:0] gr_h, gi_h; logic [15:0] y0_h; logic [32:0] t_h; logic signed [6:0] s_h; logic z_h;
   always_ff @(posedge clk) begin
     if (rst) begin vh <= 1'b0; lh <= 1'b0; end else begin vh <= vg; lh <= lg; end
@@ -177,9 +193,14 @@ module phy_channel_estimator
 
   // ---------------------------------------------------------------- weight RAM (write at stage O, synchronous read port)
   logic [39:0] wram [NA];
+  logic [39:0] wram_e [NA];                      // mirror read by the post engine
+  logic signed [11:0] lgram [NA];
   always_ff @(posedge clk) begin
-    if (vo) wram[ao] <= w_o;
+    if (vo) begin wram[ao] <= w_o; wram_e[ao] <= w_o; lgram[ao] <= lg_pipe[11]; end
+    else if (eng_we) begin wram[eng_wa] <= eng_wd; wram_e[eng_wa] <= eng_wd; end
     if (rd_en) rd_data <= wram[rd_addr];
+    eng_rw  <= wram_e[eng_ra];
+    eng_rlg <= lgram[eng_ra];
   end
   always_ff @(posedge clk) begin
     if (rst) done <= 1'b0; else done <= vo & lo;

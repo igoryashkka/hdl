@@ -318,6 +318,8 @@ ce_in, ce_exp = [], []
 yr_a = np.array([a for a, b in fr]); yi_a = np.array([b for a, b in fr])
 mr, mi, E = rfx.chest(yr_a, yi_a)
 wr("cest_exp.mem", [pack_w(int(a), int(b), int(c)) for a, b, c in zip(mr, mi, E)], 10)
+import phy2_fixed_ref as _pf0
+wr("cest_lg.mem", [int(v) & 0xFFF for v in _pf0.chest_lg(yr_a, yi_a)], 3)
 # gaps: valid + {first,last} + data
 seq = []
 for k, (a, b) in enumerate(fr):
@@ -461,3 +463,64 @@ for _i in range(4):
 wr("lpe_in.mem", _ebytes, 2)
 wr("lpe_exp.mem", _enib, 1)
 print("ldpc encoder vectors:", len(_ebytes), "bytes ->", len(_enib), "nibbles")
+
+# ---- soft LLR demapper (phy_llr_demap): 3 symbols of 1100 bins against one parameter set ----
+import phy2_fixed_ref as pf
+_rs = np.random.default_rng(99)
+_nb = 1100
+_T = _rs.integers(0, 8193, _nb); _T[::7] = 8192
+_gm = _rs.integers(32, 64, _nb)
+_ge = _rs.integers(-8, 32, _nb)
+_prm = [(int(_T[k]) << 13) | (int(_gm[k]) << 7) | (int(_ge[k]) & 0x7F) for k in range(_nb)]
+wr("llr_prm.mem", _prm, 8)
+_sx, _se = [], []
+for _s in range(3):
+    _xr = _rs.integers(-30000, 30000, _nb); _xi = _rs.integers(-30000, 30000, _nb)
+    _xr[::5] = _rs.integers(-300, 300, len(_xr[::5])); _xi[::6] = _rs.integers(-300, 300, len(_xi[::6]))
+    _llr = pf.demap_soft(_xr, _xi, _T, _gm, _ge)
+    for _k in range(_nb):
+        _sx.append((int(_xr[_k]) & 0xFFFF) << 16 | (int(_xi[_k]) & 0xFFFF))
+        _se.append(sum((int(_llr[_k][_j]) & 0x3F) << (6 * (3 - _j)) for _j in range(4)))
+wr("llr_in.mem", _sx, 8)
+wr("llr_exp.mem", _se, 6)
+print("llr demap vectors:", len(_sx))
+
+# ---- noise estimator: 3 FFT frames (first and third measured), guard-bin energy -> log code ----
+_rn = np.random.default_rng(55)
+_nf, _nexp = [], []
+for _f in range(3):
+    _sc = [300, 20000, 40][_f]
+    _yr = np.clip(np.rint(_rn.standard_normal(FFT_SIZE) * _sc), -32768, 32767).astype(np.int64)
+    _yi = np.clip(np.rint(_rn.standard_normal(FFT_SIZE) * _sc), -32768, 32767).astype(np.int64)
+    if _f == 1:
+        _yr[:] = 0; _yi[:] = 0
+    for _b in range(FFT_SIZE):
+        _nf.append((int(_yr[_b]) & 0xFFFF) << 16 | (int(_yi[_b]) & 0xFFFF))
+    if _f != 1:
+        _code, _S = pf.noise_code(_yr, _yi)
+        _nexp.append((_code & 0x1FFF, _S))
+wr("nse_in.mem", _nf, 8)
+wr("nse_exp.mem", [(c << 41) | s for c, s in _nexp], 14)
+print("noise est vectors:", len(_nf), [(c, s) for c, s in _nexp])
+
+# ---- MMSE post engine: weights / log codes in, rewritten weights + data-bin parameters out (MMSE and ZF runs) ----
+_rp = np.random.default_rng(66)
+_pw = [(int(_rp.integers(-32767, 32768)), int(_rp.integers(-32767, 32768)), int(_rp.integers(-10, 35))) for _ in range(NUM_ACTIVE_SC)]
+_plg = _rp.integers(-300, 1000, NUM_ACTIVE_SC)
+_plg[::37] = -1000
+_plg[5::41] = 1023
+_mr = np.array([a for a, b, c in _pw]); _mi = np.array([b for a, b, c in _pw]); _E = np.array([c for a, b, c in _pw])
+wr("eng_w.mem", [pack_w(a, b, c) for a, b, c in _pw], 10)
+wr("eng_lg.mem", [int(v) & 0xFFF for v in _plg], 3)
+_nus = [250, -60]
+wr("eng_nu.mem", [v & 0x1FFF for v in _nus], 4)
+_res = {}
+for _mode in (1, 0):
+    _mr2, _mi2, _T, _gm, _ge = pf.post_engine(_mr, _mi, _E, _plg, _nus[0] if _mode else _nus[1], bool(_mode))
+    _ds = rfx.DATA_S
+    _res[_mode] = ([pack_w(int(a), int(b), int(c)) for a, b, c in zip(_mr2, _mi2, _E)],
+                   [(int(_T[k]) << 13) | (int(_gm[k]) << 7) | (int(_ge[k]) & 0x7F) for k in _ds])
+wr("eng_exp_w.mem", _res[1][0], 10)
+wr("eng_exp_p1.mem", _res[1][1], 8)
+wr("eng_exp_p0.mem", _res[0][1], 8)
+print("mmse post vectors ok")

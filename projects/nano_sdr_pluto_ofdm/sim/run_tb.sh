@@ -7,9 +7,9 @@ SIM=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(dirname "$SIM")
 TB=$1; shift
 TBF=$(ls "$ROOT"/tb/*/"$TB".sv)
-RTL="$ROOT/rtl/common/phy_pkg.sv $ROOT/rtl/common/phy_ldpc_pkg.sv"
+RTL="$ROOT/rtl/common/phy_pkg.sv $ROOT/rtl/common/phy_ldpc_pkg.sv $ROOT/rtl/common/phy_soft_pkg.sv"
 for f in "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/tx/*.sv "$ROOT"/rtl/rx/*.sv "$ROOT"/rtl/common/*.v "$ROOT"/rtl/tx/*.v "$ROOT"/rtl/rx/*.v; do
-  [ -e "$f" ] && [ "$(basename "$f")" != phy_pkg.sv ] && [ "$(basename "$f")" != phy_ldpc_pkg.sv ] && RTL="$RTL $f"
+  [ -e "$f" ] && [ "$(basename "$f")" != phy_pkg.sv ] && [ "$(basename "$f")" != phy_ldpc_pkg.sv ] && [ "$(basename "$f")" != phy_soft_pkg.sv ] && RTL="$RTL $f"
 done
 mkdir -p "$SIM/work" && rm -rf "$SIM/work/vec" && cp -r "$SIM/vec" "$SIM/work/vec" && cd "$SIM/work" || exit 1
 $V/xvlog.bat -sv $RTL $TBF "$@" > xvlog.log 2>&1 || { cat xvlog.log; exit 1; }
