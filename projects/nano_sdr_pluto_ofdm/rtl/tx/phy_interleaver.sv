@@ -19,6 +19,7 @@ module phy_interleaver
 ) (
   input  logic              clk,
   input  logic              rst,
+  input  logic              rot_en,          // 0: no rotation (QPSK words), static per block
   input  logic              in_valid,
   output logic              in_ready,
   input  logic [WORD_W-1:0] in_data,
@@ -65,7 +66,7 @@ module phy_interleaver
   //   deinterleave : word i is stored at address i (= m)                                    -> rotr when i odd
   logic [IW-1:0] wfast, wslow;           // i % ROWS , i / ROWS   (interleave only)
   wire           m_odd_w = DEINT ? wr_idx[0] : ((wfast[0] & COLS[0]) ^ wslow[0]);
-  wire [WORD_W-1:0] wdata = m_odd_w ? (DEINT ? rotr(in_data) : rotl(in_data)) : in_data;
+  wire [WORD_W-1:0] wdata = (m_odd_w && rot_en) ? (DEINT ? rotr(in_data) : rotl(in_data)) : in_data;
 
   always_ff @(posedge clk) begin
     if (in_valid && in_ready)

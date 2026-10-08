@@ -1,7 +1,8 @@
 """PHY constants -- mirror of rtl/common/phy_pkg.sv."""
 SAMPLE_RATE_HZ = 30_720_000
 FFT_SIZE = 2048
-CP_LEN = 144
+import os as _os
+CP_LEN = int(_os.environ.get("PHY_CP_LEN", "144"))      # the RTL is built for 144; the CP experiment (python models only) sets PHY_CP_LEN = 256 / 384
 SYMBOL_LEN = FFT_SIZE + CP_LEN
 SUBCARRIER_HZ = SAMPLE_RATE_HZ // FFT_SIZE
 NUM_ACTIVE_SC = 1200
@@ -34,3 +35,8 @@ BYTES_PER_OFDM = NUM_DATA_SC * BITS_PER_SYM // 8
 TX_MAX_SYMS = 8
 TX_SHIFT_MASK = 0x0FF
 TX_GAIN_DEFAULT = 16384
+
+# dual-mode PHY: MODE_ID 0 = MAX RANGE (QPSK, LDPC 1/2), 1 = MAX RATE (16-QAM, LDPC 5/6); repetition-coded QPSK header symbol after the LTS
+QPSK_UNIT = 9216                      # QPSK axis level = 2.25 * QAM_UNIT (same mean power as 16-QAM)
+HDR_AMP = QPSK_UNIT
+HDR_SEED = 0x1B2D

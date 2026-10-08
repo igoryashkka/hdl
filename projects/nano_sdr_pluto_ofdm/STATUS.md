@@ -119,3 +119,17 @@ RX-білд: у `axi_ad9361` вимкнено DDS і IQ-корекцію DAC (`D
 - Таймінг RX (Z7020, 8 нс): конвеєр акумулятора нахилу SFO і множення в `phy_phase_tracker`, ваги каналу в блочній RAM, реєстрові стадії в `phy_tau_est`, `phy_mmse_post`, `w0_adj`, `phy_rx_decode_ldpc`, `|q|` у декодері, 16-бітове порівняння у `phy_rx_window`.
 - Vivado 2025.2, xc7z020clg400-1: TX LUT 16987 / FF 24440 / BRAM 21 / DSP 54, WNS +0.666; RX LUT 40420 / FF 40257 / BRAM 33.5 / DSP 88, WNS +0.116, WHS +0.023, slice 13083 з 13300 (98 %). Запасу по slice майже немає: LDPC-декодер (≈ 20k LUT) варто зменшити.
 - Регресія `sim/run_regression.sh`: 76/76 пройшли. На реальному залізі нічого не перевірено.
+
+
+## v0.7.0: dual-mode PHY (ТЗ 003), гілка OFDM_PHY_Z7020_DUALMODE
+
+Опис архітектури: `ARCHITECTURE_DUALMODE.md`. Звіт: `phy_sim/experiments/{dualmode_study,dualmode_scenario,cp_study,header_study,rtl_runs_dm,build_dualmode_report}.py`.
+
+- Два режими на одному RTL, режим у символі заголовка кожного пакета (`phy_hdr_gen` / `phy_hdr_dec`, повторне кодування, CRC-4): MAX RANGE = QPSK + LDPC 1/2 (135 байт / символ, 15.1 Мбіт/с), MAX RATE = 16-QAM + LDPC 5/6 (450 байт / символ, 50.5 Мбіт/с). Перемикання між пакетами; TX: регістр `0x18` bit1 `MODE` (запис `1` = RANGE, `3` = RATE), RX: `0x1C` bit1 `HDR_EN`, bit2 `MODE` (резерв), `0x28` bit1 `SMOOTH`.
+- Нові / змінені блоки: `phy_ldpc_{enc,dec}` (два коди, таблиці в `phy_ldpc_pkg`), QPSK-мапер і QPSK-шлях `phy_llr_demap`, `phy_g_smooth` (3-бінове згладжування LTS-оцінки каналу), лінія затримки вікна `WIN_DELAY = 640`, header v3 біти `[23:20]` = {nsyms mismatch, CRC ok, MODE_ID, dual}.
+- SNR(PER <= 1 %), на відлік, дБ (симулятор, бітово-точні моделі): AWGN Current 15 -> MAX RATE 12 / MAX RANGE 1; 3 промені 21 -> 14 / 3; Rician 30 -> 18 / 3.
+- RTL: 85 з 85 тестбенчів проходять (`sim/run_regression.sh`), нові для режимів: `tb_phy_hdr`, `tb_phy_ldpc_{enc,dec}` (MODE 0/1), `tb_phy_llr_demap` (QP 0/1), `tb_phy_channel_estimator` (SM 0/1), `tb_phy_rx_decode_ldpc`, `tb_phy_tx_top`, `tb_phy_rx_top` (MODE 0/1/2 = перемикання між пакетами). RTL-сценарії TX -> канал -> RX у xsim для обох режимів дають ті самі рішення, що й модель.
+- Знайдено й виправлено в RTL: початок FFT-вікна міг лежати в минулому на момент арму при низькому SNR (детектор оголошує пакет до 704 відліків після піка) -> `WIN_DELAY`.
+- Ресурси (synth_est.tcl, out-of-context, xc7z020; XCZU27DR недоступний за ліцензією): RX 42243 LUT / 31851 FF / 33.5 BRAM / 84 DSP (post-synth WNS +0.50 нс), TX 10211 LUT / 9051 FF / 19 BRAM / 38 DSP (WNS +1.97 нс). Це ≈ 10 % LUT XCZU27DR. Place and route для нових блоків не робився.
+- Час декодування LDPC (RTL): ≈ 460 тактів / ітерація (1/2), ≈ 300 (5/6): 10 ітерацій вкладаються в символ (4384 такти) лише при 122.88 МГц, при 61.44 МГц працює раннє завершення (у сценаріях 2-6 ітерацій).
+- Обмеження: нічого не запускалось на залізі; "fine CFO" виконується CPE-лічильником на кожному символі (NCO не підстроюється); CP 144/256/384 досліджено лише в моделі (RTL зібрано під 144); автоматичне перемикання режиму та HARQ не реалізовані.

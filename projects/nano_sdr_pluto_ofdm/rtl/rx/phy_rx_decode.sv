@@ -39,7 +39,7 @@ module phy_rx_decode
   logic        di_in_ready, di_valid, di_first, di_last;
   logic [31:0] di_word;
   phy_interleaver #(.WORD_W(32), .ROT_UNIT(LLR_W), .DEINT(1'b1)) u_deint (
-    .clk, .rst, .in_valid(dm_valid), .in_ready(di_in_ready), .in_data(dm_word),
+    .clk, .rst, .rot_en(1'b1), .in_valid(dm_valid), .in_ready(di_in_ready), .in_data(dm_word),
     .out_valid(di_valid), .out_ready(1'b1), .out_data(di_word), .out_first(di_first), .out_last(di_last)
   );
   always_ff @(posedge clk) begin

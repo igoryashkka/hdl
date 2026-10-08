@@ -46,14 +46,53 @@ N_FFT = P.FFT_SIZE
 SYM_LEN = P.SYMBOL_LEN
 BYTES_PER_SYM = P.BYTES_PER_OFDM
 # calibration of the Schmidl-Cox detector (python/sync_test.py): sync-symbol start = n_best - SYNC_PEAK_OFFSET (+-20)
-SYNC_PEAK_OFFSET = 2184
-LTS_WINDOW_OFFSET = 104                 # FFT window of the LTS starts at n_best + 104 (RTL W0_OFFSET)
+SYNC_PEAK_OFFSET = SYM_LEN - 8
+LTS_WINDOW_OFFSET = P.CP_LEN - 40       # FFT window of the LTS starts at n_best + 104 for CP = 144 (RTL W0_OFFSET)
+
+
+hdr_ref = importlib.import_module("hdr_ref")
+
+# phy.mode: "current" = legacy uncoded 16-QAM PHY (550 bytes / symbol, no header); every other value is the dual-mode frame
+# [sync][LTS][header][data...]:  "max_range" = QPSK + LDPC 1/2 (MODE_ID 0), "max_rate" = 16-QAM + LDPC 5/6 (MODE_ID 1; "new" is an alias),
+# "reference" = the reference PHY of ТЗ 003 (16-QAM + LDPC 5/6 + ZF + hard LLR + coarse synchronization only; set by the experiment through
+# the phy.eq / phy.llr / phy.fine_timing / phy.sfo keys).  phy.layout = [modulation, code] overrides the layout (ablation study).
+PHY_MODE_IDS = {"max_range": 0, "max_rate": 1, "new": 1, "reference": 1}
 
 
 def phy_code(cfg: dict) -> str:
-    """"ldpc" for the new PHY (LDPC R=5/6 + soft LLR + MMSE), "none" for the current uncoded PHY."""
-    return "ldpc" if (cfg.get("phy") or {}).get("mode", "current") == "new" else "none"
+    """"ldpc" for the dual-mode PHY, "none" for the legacy uncoded PHY."""
+    return "ldpc" if (cfg.get("phy") or {}).get("mode", "current") in PHY_MODE_IDS else "none"
+
+
+def phy_layout(cfg: dict):
+    """MODE_ID (0 / 1) or a (modulation, code) tuple of the coded frame."""
+    ph = cfg.get("phy") or {}
+    if ph.get("layout"):
+        return tuple(ph["layout"])
+    return PHY_MODE_IDS.get(ph.get("mode", "current"), 1)
+
+
+_PHY_DEFAULTS = {
+    "reference": {"eq": "zf", "llr": "hard", "fine_timing": False, "cpe": True, "sfo": False, "chest_smooth": 0},
+}
+_PHY_NEW = {"eq": "mmse", "llr": "weighted", "fine_timing": True, "cpe": True, "sfo": True, "chest_smooth": 1, "max_iter": 10}
+
+
+def phy_opts(cfg: dict) -> dict:
+    """Receiver options of the selected PHY mode (explicit keys of the phy section override the mode defaults).
+    max_range / max_rate: MMSE + per-bin soft LLR + fine timing + CPE + SFO tracking + 9-bin channel smoothing (chest_smooth = 1 = half window, 3 bins);
+    reference: ZF, hard-decision LDPC input, coarse timing only, no SFO tracking, LS channel estimate without smoothing."""
+    ph = dict(cfg.get("phy") or {})
+    base = dict(_PHY_NEW)
+    base.update(_PHY_DEFAULTS.get(ph.get("mode", "max_rate"), {}))
+    base.update({k: v for k, v in ph.items() if k != "mode"})
+    return base
 
 
 def bytes_per_sym(cfg: dict | None = None) -> int:
-    return phy2_ref.INFO_BYTES_PER_SYM if (cfg and phy_code(cfg) == "ldpc") else BYTES_PER_SYM
+    return phy2_ref.info_bytes_per_sym(phy_layout(cfg)) if (cfg and phy_code(cfg) == "ldpc") else BYTES_PER_SYM
+
+
+def frame_syms(cfg: dict | None = None) -> int:
+    """OFDM symbols before the data: sync + LTS (+ header symbol of the dual-mode frame)."""
+    return 3 if (cfg and phy_code(cfg) == "ldpc") else 2

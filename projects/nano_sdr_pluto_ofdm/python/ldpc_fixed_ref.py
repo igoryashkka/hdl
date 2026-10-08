@@ -30,11 +30,13 @@ def quant_llr(llr: np.ndarray, scale: float = 1.0) -> np.ndarray:
 
 def layer_entries(base=None):
     base = lr.H_BASE if base is None else base
-    return [[(j, int(base[i, j])) for j in range(NB) if base[i, j] >= 0] for i in range(MB)]
+    return [[(j, int(base[i, j])) for j in range(NB) if base[i, j] >= 0] for i in range(base.shape[0])]
 
 
 def decode(llr_q: np.ndarray, max_iter: int = 8, base=None, early_stop: bool = True):
     """llr_q: (B, N) int channel LLRs (positive = bit 0). Returns (hard (B, N) uint8, iterations (B,), parity_ok (B,))."""
+    base = lr.H_BASE if base is None else base
+    MB = base.shape[0]                  # layers of the selected code (6 for R = 5/6, 18 for R = 1/2): one clean iteration ends the decoding
     ent = layer_entries(base)
     llr_q = np.atleast_2d(llr_q).astype(np.int64)
     B = llr_q.shape[0]

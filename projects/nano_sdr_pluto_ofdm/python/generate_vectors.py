@@ -328,6 +328,14 @@ import phy2_fixed_ref as _pf0
 wr("cest_lg.mem", [int(v) & 0xFFF for v in _pf0.chest_lg(yr_a, yi_a)], 3)
 wr("cest_sum.mem", [_pf0.chest_lg_sum(yr_a, yi_a)[1]], 11)
 wr("cest_tau.mem", [_pf0.timing_est(yr_a, yi_a)[0] & 0xFFFFF], 5)
+# the same frame with the 3-bin smoothing of G enabled (cfg_smooth = 1)
+_gr_s, _gi_s = _pf0.smooth_g(yr_a, yi_a, _pf0.SMOOTH_S)
+_mr_s, _mi_s, _E_s = _pf0.chest_g(_gr_s, _gi_s)
+wr("cesm_exp.mem", [pack_w(int(a), int(b), int(c)) for a, b, c in zip(_mr_s, _mi_s, _E_s)], 10)
+_lg_s, _sum_s = _pf0.lg_g(_gr_s, _gi_s)
+wr("cesm_lg.mem", [int(v) & 0xFFF for v in _lg_s], 3)
+wr("cesm_sum.mem", [_sum_s], 11)
+wr("cesm_tau.mem", [_pf0.timing_est(yr_a, yi_a, _pf0.SMOOTH_S)[0] & 0xFFFFF], 5)
 # gaps: valid + {first,last} + data
 seq = []
 for k, (a, b) in enumerate(fr):
@@ -573,28 +581,152 @@ wr("eng_q.mem", [(_sig_sums[0] << 0), (_sig_sums[1] << 0)], 11)
 wr("eng_qexp.mem", [((a & 0x1FFF) << 24) | ((m & 0x1FFF) << 11) | (b & 0x7FF) for (a, m, b) in _qs], 10)
 print("mmse post vectors ok", _qs)
 
-# ---- coded RX back-end (phy_rx_decode_ldpc): 2-symbol packet (900 bytes) through the real chain model on a 2-path channel ----
+# ---- dual-mode vectors (ТЗ 003): R=1/2 decoder / encoder, QPSK demapper, header generator / decoder, back-end, system streams ----
+# (appended to generate_vectors.py; uses the helpers defined there: wr, rng, tx_ref, sync_ref, ...)
+import phy3_test as _p3
+import hdr_ref
 import phy2_ref as _p2
-import phy2_fixed_test as _p2t
-import phy2_test as _p2s
-_rb = np.random.default_rng(404)
-_p2s.rng = _rb
-_nsy = 2
-_Hc = _p2s.chan("2path")
-_pay_b = bytes(_rb.integers(0, 256, _p2.bytes_per_sym("ldpc") * _nsy, dtype=np.uint8))
-_wds = _p2.tx_words(_pay_b, _nsy, "ldpc")
-_sg2 = np.mean(np.abs(_Hc) ** 2) * _p2.P_DATA / 10 ** (18.5 / 10)
-_yl, _ys = _p2s.make_y(_wds, _Hc, _sg2, _nsy)
-_ylq, _ysq = _p2t.int_y(_yl, _ys)
-_llr_b, _dg = pf.receive_symbols(_ylq, _ysq, True)
-_bytes_b, _its_b, _done_b = pf.decode_llr(_llr_b, _nsy, len(_pay_b), 10)
-print("coded back-end vector: payload match", _bytes_b == _pay_b, "iterations", _its_b.tolist())
-_xin = []
-for _s in range(_nsy):
-    _xr, _xi = _dg["eq"][_s]
+import phy2_fixed_ref as pf
+import ldpc_ref, ldpc_fixed_ref
+
+# LDPC R=1/2 decoder: 10 codewords (clean ... marginal ... failing, all-zero LLRs, noise only), 135 bytes each
+_rg0 = np.random.default_rng(177)
+_b12 = ldpc_ref.H_BASE12
+_k12 = ldpc_ref.K12
+_rate12 = _k12 / ldpc_ref.N
+_snrs0 = [5.0, 3.0, 2.2, 1.9, 0.5, 4.0, 2.0, 8.0]
+_info0 = _rg0.integers(0, 2, (len(_snrs0), _k12), dtype=np.uint8)
+_cw0 = ldpc_ref.encode(_info0, _b12)
+_llrq0 = []
+for _i, _s in enumerate(_snrs0):
+    _sig = np.sqrt(1 / (2 * _rate12 * 10 ** (_s / 10)))
+    _y = (1 - 2.0 * _cw0[_i]) + _sig * _rg0.standard_normal(ldpc_ref.N)
+    _llrq0.append(ldpc_fixed_ref.quant_llr(2 * _y / _sig ** 2, 1.5))
+_llrq0.append(np.zeros(ldpc_ref.N, np.int64))
+_llrq0.append(np.clip(np.rint(_rg0.standard_normal(ldpc_ref.N) * 6), -31, 31).astype(np.int64))
+_llrq0 = np.array(_llrq0)
+_hard0, _its0, _done0 = ldpc_fixed_ref.decode(_llrq0, LDP_MAXIT, base=_b12)
+_inw0, _exp0 = [], []
+for _i in range(len(_llrq0)):
+    for _w in range(ldpc_ref.N // 4):
+        _inw0.append(sum((int(_llrq0[_i][4 * _w + _j]) & 0x3F) << (6 * (3 - _j)) for _j in range(4)))
+    _by = np.packbits(_hard0[_i][:_k12])
+    _exp0 += [int(b) for b in _by] + [(int(_done0[_i]) << 8) | int(_its0[_i])]
+wr("ldp0_in.mem", _inw0, 6)
+wr("ldp0_exp.mem", _exp0, 3)
+print("ldpc R=1/2 decoder vectors:", len(_llrq0), "codewords, iterations", _its0.tolist(), "done", _done0.astype(int).tolist())
+
+# LDPC R=1/2 encoder: 4 codewords = 4 OFDM symbols (1080 two-bit words + 20 filler words 0x1 each)
+_re0 = np.random.default_rng(188)
+_einfo0 = _re0.integers(0, 2, (4, _k12), dtype=np.uint8)
+_ecw0 = ldpc_ref.encode(_einfo0, _b12)
+_eb0, _en0 = [], []
+for _i in range(4):
+    _eb0 += [int(b) for b in np.packbits(_einfo0[_i])]
+    _en0 += [int(a) << 1 | int(b) for a, b in _ecw0[_i].reshape(-1, 2)]
+    _en0 += [1] * 20
+wr("lpe0_in.mem", _eb0, 2)
+wr("lpe0_exp.mem", _en0, 1)
+print("ldpc R=1/2 encoder vectors:", len(_eb0), "bytes ->", len(_en0), "words")
+
+# QPSK soft demapper: same parameter RAM as the 16-QAM test, output [I, Q, 0, 0]
+_rq = np.random.default_rng(199)
+_T = np.array([p >> 13 for p in _prm]); _gm = np.array([(p >> 7) & 0x3F for p in _prm])
+_ge = np.array([((p & 0x7F) ^ 0x40) - 0x40 for p in _prm])           # the loop of the post-engine vectors reused these names: rebuild from the llr_prm.mem words
+_sxq, _seq = [], []
+for _s in range(3):
+    _xr = _rq.integers(-30000, 30000, 1100); _xi = _rq.integers(-30000, 30000, 1100)
+    _xr[::5] = _rq.integers(-300, 300, len(_xr[::5])); _xi[::6] = _rq.integers(-300, 300, len(_xi[::6]))
+    _llr = pf.demap_soft(_xr, _xi, _T, _gm, _ge, qpsk=True)
     for _k in range(1100):
-        _xin.append((int(_xr[_k]) & 0xFFFF) << 16 | (int(_xi[_k]) & 0xFFFF))
-wr("cdb_in.mem", _xin, 8)
-wr("cdb_prm.mem", [(int(_dg["T"][k]) << 13) | (int(_dg["gm"][k]) << 7) | (int(_dg["ge"][k]) & 0x7F) for k in range(1100)], 8)
-wr("cdb_exp.mem", [int(b) for b in _bytes_b], 2)
-wr("cdb_stat.mem", [int((~_done_b).sum()), int(_its_b.max()), int(_its_b.sum())], 4)
+        _sxq.append((int(_xr[_k]) & 0xFFFF) << 16 | (int(_xi[_k]) & 0xFFFF))
+        _seq.append(((int(_llr[_k][0]) & 0x3F) << 18) | ((int(_llr[_k][1]) & 0x3F) << 12))
+wr("llq_in.mem", _sxq, 8)
+wr("llq_exp.mem", _seq, 6)
+
+# header generator (3 headers) and decoder (clean, noisy, corrupted)
+_hg = [(0, 7), (1, 200), (1, 1)]
+_hexp = []
+for _m, _n in _hg:
+    _b = hdr_ref.tx_bins(_m, _n)
+    _hexp += [((int(a) & 0xFFFF) << 16) | (int(c) & 0xFFFF) for a, c in _b]
+wr("hdg_exp.mem", _hexp, 8)
+wr("hdg_cfg.mem", [(_m << 8) | _n for _m, _n in _hg], 3)
+_rh = np.random.default_rng(210)
+_hin, _hres = [], []
+for _case, (_m, _n, _amp, _sd) in enumerate([(1, 5, 20, 3), (0, 33, 4, 22), (1, 9, 0, 28)]):
+    _b = hdr_ref.tx_bins(_m, _n)
+    _l = np.where(_b > 0, -_amp, _amp) + np.rint(_rh.standard_normal(_b.shape) * _sd).astype(int)
+    _l = np.clip(_l, -31, 31)
+    _hin += [((int(a) & 0x3F) << 6) | (int(c) & 0x3F) for a, c in _l]
+    _r = hdr_ref.decode(_l)
+    _hres.append((int(_r["ok"]) << 23) | (_r["mode"] << 22) | (_r["nsyms"] << 14) | _r["conf"])
+wr("hdd_in.mem", _hin, 3)
+wr("hdd_exp.mem", _hres, 6)
+print("header decoder expected:", [hex(v) for v in _hres])
+
+
+# back-end vectors: header symbol + 2 data symbols through the symbol-level chain model on a 2-path channel
+def _backend(mode, tag, snr):
+    _rb = np.random.default_rng(404 + mode)
+    _p3.T.rng = _rb
+    _nsy = 2
+    _Hc = _p3.T.chan("2path")
+    lay = _p2.layout(mode)
+    _pay = bytes(_rb.integers(0, 256, lay["bytes"] * _nsy, dtype=np.uint8))
+    _wds = _p2.tx_words(_pay, _nsy, "ldpc", mode)
+    _sg = np.mean(np.abs(_Hc) ** 2) * _p2.P_DATA / 10 ** (snr / 10)
+    _yl, _ys = _p3.make_y3(_wds, mode, _Hc, _sg, _nsy, rng=_rb)
+    _ylq, _ysq = _p3._int(_yl, _ys)
+    _llr, _dg = pf.receive_symbols(_ylq, _ysq, True, True, True, mode)
+    _by, _it, _dn = pf.decode_llr(_llr, _nsy, len(_pay), 10, mode)
+    print("back-end", tag, "payload match", _by == _pay, "iterations", _it.tolist(), "hdr", _dg["hdr"])
+    _x = []
+    for (_xr, _xi) in [_dg["eq_hdr"]] + _dg["eq"]:
+        for _k in range(1100):
+            _x.append((int(_xr[_k]) & 0xFFFF) << 16 | (int(_xi[_k]) & 0xFFFF))
+    wr(f"{tag}_in.mem", _x, 8)
+    wr(f"{tag}_prm.mem", [(int(_dg["T"][k]) << 13) | (int(_dg["gm"][k]) << 7) | (int(_dg["ge"][k]) & 0x7F) for k in range(1100)], 8)
+    wr(f"{tag}_exp.mem", [int(b) for b in _by], 2)
+    wr(f"{tag}_stat.mem", [int((~_dn).sum()), int(_it.max()), int(_it.sum()), (int(_dg["hdr"]["ok"]) << 9) | (_dg["hdr"]["mode"] << 8) | _dg["hdr"]["nsyms"]], 4)
+
+
+_backend(1, "cdb", 18.5)
+_backend(0, "cdq", 6.5)
+
+# TX system vectors, MAX RANGE (QPSK) packets: 2 symbols (270 bytes) and 200 bytes (padded to 2 symbols)
+_txq = [[rng.getrandbits(8) for _ in range(n)] for n in (270, 200)]
+for _k, _pk in enumerate(_txq):
+    wr(f"txq_pkt{_k}_in.mem", _pk, 2)
+    wr(f"txq_pkt{_k}_exp.mem", [((a & 0xFFFF) << 16) | (b & 0xFFFF) for a, b in tx_ref.tx_frame(_pk, code="ldpc", mode=0)], 8)
+
+# RX system streams: A = MAX RANGE, B = MAX RATE (and the reverse order) with different CFO / channel, 2 data symbols each
+import channel_ref, sync_test
+import rx_blocks_ref as _rbr
+
+
+def _rx_stream(tag, modes, snrs, cfos, paths, seeds):
+    _pays, _frames = [], []
+    for m in modes:
+        nb = 2 * _p2.layout(m)["bytes"]
+        _p = [rng.getrandbits(8) for _ in range(nb)]
+        _pays.append(_p)
+        _frames.append(np.array([complex(a, b) for a, b in tx_ref.tx_frame(_p, code="ldpc", mode=m)]))
+    segs = []
+    for k, fr in enumerate(_frames):
+        segs.append(channel_ref.apply_channel(fr, snr_db=snrs[k], cfo_hz=cfos[k], paths=paths[k], lead=1200 if k == 0 else 0,
+                                              trail=9000 if k == 0 else 3000, seed=seeds[k]))
+    _i, _q = sync_test.adc(np.concatenate(segs))
+    wr(f"{tag}_in.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(_i, _q)], 8)
+    wr(f"{tag}_pay.mem", [b for p in _pays for b in p], 2)
+    _di = np.array(_rbr.dc_remove(_i, 16)); _dq = np.array(_rbr.dc_remove(_q, 16))
+    _ev = sync_ref.detect_events(_di, _dq, hold=9000)
+    with open(os.path.join(OUT, f"{tag}_ev.mem"), "w") as f:
+        for e in _ev:
+            f.write(("%08x %08x %08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]), sync_ref.rssi_code(e["r_best"]), 0)) + chr(10))
+    print(tag, "stream", len(_i), "samples; events", [(e["n_decl"], e["n_best"]) for e in _ev])
+
+
+_rx_stream("rxq", [0, 0], [14, 8], [9000.0, -7000.0], [((0, 1),), ((0, 1), (9, 0.4j))], [41, 42])
+_rx_stream("rxm", [1, 0], [33, 8], [9000.0, -7000.0], [((0, 1),), ((0, 1), (9, 0.4j))], [51, 52])
+print("OK dual-mode vectors in", OUT)

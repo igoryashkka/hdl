@@ -35,34 +35,38 @@ def _qc_ok(base: np.ndarray) -> bool:
     return True
 
 
-def build_base(seed: int = 1, tries: int = 2000) -> np.ndarray:
+def build_base(seed: int = 1, tries: int = 2000, mb: int = MB, info_deg=None) -> np.ndarray:
+    """mb block rows (rate (NB-mb)/NB); info_deg[c] = weight of information column c (default 3 for all)."""
+    kb = NB - mb
+    info_deg = [3] * kb if info_deg is None else list(info_deg)
     rng = np.random.default_rng(seed)
     for _ in range(tries):
-        base = -np.ones((MB, NB), dtype=np.int64)
-        # information part: every column has 3 entries, rows balanced
-        load = np.zeros(MB, int)
-        for c in range(KB):
-            order = np.argsort(load + rng.random(MB) * 0.9)
-            rows = order[:3]
+        base = -np.ones((mb, NB), dtype=np.int64)
+        # information part: columns with their weight, rows balanced
+        load = np.zeros(mb, int)
+        for c in range(kb):
+            order = np.argsort(load + rng.random(mb) * 0.9)
+            rows = order[:info_deg[c]]
             load[rows] += 1
             for r in rows:
                 base[r, c] = rng.integers(0, Z)
-        # parity part (802.11n style): column KB has entries in row 0 (shift a), row MB//2 (shift 0), row MB-1 (shift a)
+        # parity part (802.11n style): column kb has entries in row 0 (shift a), row mb//2 (shift 0), row mb-1 (shift a)
         a = int(rng.integers(1, Z))
-        base[0, KB] = a
-        base[MB // 2, KB] = 0
-        base[MB - 1, KB] = a
-        for k in range(1, MB):             # dual diagonal: column KB+k has entries in rows k-1 and k, shift 0
-            base[k - 1, KB + k] = 0
-            base[k, KB + k] = 0
+        base[0, kb] = a
+        base[mb // 2, kb] = 0
+        base[mb - 1, kb] = a
+        for k in range(1, mb):             # dual diagonal: column kb+k has entries in rows k-1 and k, shift 0
+            base[k - 1, kb + k] = 0
+            base[k, kb + k] = 0
         if _qc_ok(base):
             return base
     raise RuntimeError("no 4-cycle-free code found")
 
 
 def expand(base: np.ndarray) -> np.ndarray:
-    H = np.zeros((MB * Z, NB * Z), dtype=np.uint8)
-    for i in range(MB):
+    mb = base.shape[0]
+    H = np.zeros((mb * Z, NB * Z), dtype=np.uint8)
+    for i in range(mb):
         for j in range(NB):
             s = base[i, j]
             if s >= 0:
@@ -74,6 +78,8 @@ def expand(base: np.ndarray) -> np.ndarray:
 def encode(info: np.ndarray, base: np.ndarray | None = None) -> np.ndarray:
     """info: (B, K) bits -> (B, N) codewords [info | parity]."""
     base = H_BASE if base is None else base
+    MB = base.shape[0]
+    KB = NB - MB
     info = np.atleast_2d(info).astype(np.uint8)
     B = info.shape[0]
     u = info.reshape(B, KB, Z)
@@ -98,6 +104,7 @@ def encode(info: np.ndarray, base: np.ndarray | None = None) -> np.ndarray:
 
 def syndrome_ok(cw: np.ndarray, base: np.ndarray | None = None) -> np.ndarray:
     base = H_BASE if base is None else base
+    MB = base.shape[0]
     cw = np.atleast_2d(cw).astype(np.uint8)
     B = cw.shape[0]
     x = cw.reshape(B, NB, Z)
@@ -115,6 +122,7 @@ def syndrome_ok(cw: np.ndarray, base: np.ndarray | None = None) -> np.ndarray:
 def decode(llr: np.ndarray, iters: int = 20, alpha: float = 0.75, base: np.ndarray | None = None, early_stop: bool = True):
     """Layered normalised min-sum. llr: (B, N) channel LLRs (positive = bit 0). Returns (hard bits (B, N), iterations used (B,), ok (B,))."""
     base = H_BASE if base is None else base
+    MB = base.shape[0]
     llr = np.atleast_2d(llr).astype(np.float64)
     B = llr.shape[0]
     L = llr.reshape(B, NB, Z).copy()
@@ -152,19 +160,20 @@ def decode(llr: np.ndarray, iters: int = 20, alpha: float = 0.75, base: np.ndarr
 
 
 # ---------------------------------------------------------------- code selection
-def search_code(seeds=range(1, 9), snr_db=3.6, frames=60, seed=0) -> tuple[int, np.ndarray]:
+def search_code(seeds=range(1, 9), snr_db=3.6, frames=60, seed=0, mb: int = MB, info_deg=None, iters=25) -> tuple[int, np.ndarray]:
     """BPSK/AWGN Monte-Carlo comparison of candidate codes (frame errors at Eb/N0 = snr_db); returns (best seed, base)."""
     best = None
     rng = np.random.default_rng(seed)
-    rate = K / N
+    k = (NB - mb) * Z
+    rate = k / N
     sigma = np.sqrt(1.0 / (2 * rate * 10 ** (snr_db / 10)))
     for s in seeds:
-        base = build_base(s)
-        info = rng.integers(0, 2, (frames, K), dtype=np.uint8)
+        base = build_base(s, mb=mb, info_deg=info_deg)
+        info = rng.integers(0, 2, (frames, k), dtype=np.uint8)
         cw = encode(info, base)
         x = 1 - 2.0 * cw
         y = x + sigma * rng.standard_normal(x.shape)
-        _, _, ok = decode(2 * y / sigma ** 2, 25, base=base)
+        _, _, ok = decode(2 * y / sigma ** 2, iters, base=base)
         fer = float((~ok).mean())
         if best is None or fer < best[0]:
             best = (fer, s, base)
@@ -172,9 +181,23 @@ def search_code(seeds=range(1, 9), snr_db=3.6, frames=60, seed=0) -> tuple[int, 
 
 
 def _init():
-    global H_BASE
+    global H_BASE, H_BASE12
     H_BASE = build_base(_CHOSEN_SEED)
+    H_BASE12 = build_base(_SEED12, mb=MB12, info_deg=INFO_DEG12)
 
 
 _CHOSEN_SEED = 1
+# rate 1/2 (MAX RANGE): 18 x 36 base, 18 information columns with an irregular weight profile (chosen by Monte-Carlo, see _ldpc_cmp.py)
+MB12 = 18
+KB12 = NB - MB12
+K12 = Z * KB12                      # 1080 information bits per codeword
+INFO_DEG12 = [8] * 2 + [5] * 8 + [3] * 8
+_SEED12 = 5
+H_BASE12: np.ndarray | None = None
 _init()
+
+CODES = {"r56": H_BASE, "r12": H_BASE12}       # rate 5/6 (MAX RATE) and rate 1/2 (MAX RANGE), same N = 2160 and Z = 60
+
+
+def code_info_bits(base: np.ndarray) -> int:
+    return (NB - base.shape[0]) * Z

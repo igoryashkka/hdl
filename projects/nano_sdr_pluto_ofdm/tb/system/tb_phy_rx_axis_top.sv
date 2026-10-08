@@ -4,7 +4,7 @@
 //   DMA beat counter == 2 packets, ADC peak > 0, rssi code / evm / cfo_inc / n_best of the last packet vs the Python values,
 //   statistics clear (counters restart), soft reset (counters of the PHY restart).
 module tb_phy_rx_axis_top;
-  localparam int NS = 30745, NPKT = 2, NSYMS = 2, PBYTES = NSYMS * 450, NBEATS = 6 + (PBYTES + 7) / 8;     // coded: header v3 (6 beats)
+  localparam int NS = 35129, NPKT = 2, NSYMS = 2, PBYTES = NSYMS * 450, NBEATS = 6 + (PBYTES + 7) / 8;     // coded: header v3 (6 beats)
   logic clk = 0, aclk = 0, rst = 1, aresetn = 0;
   always #4 clk = ~clk;
   always #5 aclk = ~aclk;

@@ -1,20 +1,24 @@
 // Self-checking TB: phy_ldpc_dec vs python/ldpc_fixed_ref.py (bit-exact info bytes, iteration count, converged flag).
 // 10 codewords back to back (clean, marginal, failing at the iteration limit, all-zero LLRs, noise only), random input gaps,
 // output checked byte by byte (225 per codeword), first/last flags, status with the last byte, load/decode/output overlap.
-module tb_phy_ldpc_dec;
-  localparam int NCW = 10, NW = 540, NB = 225, MAXIT = 10;
+module tb_phy_ldpc_dec #(parameter int MODE = 1);     // 1: R = 5/6 (225 bytes / codeword), 0: R = 1/2 (135 bytes)
+  localparam int NCW = 10, NW = 540, NB = MODE ? 225 : 135, MAXIT = 10;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
   logic [23:0] stim [NCW * NW];
   logic [8:0]  expd [NCW * (NB + 1)];
   logic [4:0]  cfg_max_iter = MAXIT;
+  logic        cfg_cs = MODE[0];
   logic in_valid = 0, in_ready;
   logic signed [5:0] in_llr [4];
   logic out_valid, out_first, out_last, st_valid, st_ok, busy;
   logic [7:0] out_data; logic [4:0] st_iter;
   phy_ldpc_dec dut (.*);
 
-  int errors = 0, ncw_out = 0, nb_out = 0;
+  int errors = 0, ncw_out = 0, nb_out = 0, cyc = 0, last_st = 0;
+  always @(posedge clk) cyc <= cyc + 1;
+  // decode time report (parsed by experiments/rtl_runs.py): cycles between consecutive status pulses = decode time when the decoder is the bottleneck
+  always @(posedge clk) if (st_valid) begin $display("LDPCSTAT mode=%0d cw=%0d iter=%0d ok=%0d dt=%0d", MODE, ncw_out, st_iter, st_ok, cyc - last_st); last_st = cyc; end
   always @(posedge clk) if (!rst) begin
     if (out_valid) begin
       if (ncw_out < NCW) begin
@@ -41,8 +45,8 @@ module tb_phy_ldpc_dec;
   end
 
   initial begin
-    $readmemh("vec/ldp_in.mem", stim);
-    $readmemh("vec/ldp_exp.mem", expd);
+    $readmemh(MODE ? "vec/ldp_in.mem" : "vec/ldp0_in.mem", stim);
+    $readmemh(MODE ? "vec/ldp_exp.mem" : "vec/ldp0_exp.mem", expd);
     repeat (6) @(posedge clk); #1; rst = 0; repeat (3) @(posedge clk);
     for (int c = 0; c < NCW; c++)
       for (int w = 0; w < NW; w++) begin
@@ -56,7 +60,7 @@ module tb_phy_ldpc_dec;
     repeat (200000) begin @(posedge clk); if (ncw_out == NCW) break; end
     repeat (50) @(posedge clk);
     if (ncw_out !== NCW) begin errors++; $display("codewords out %0d != %0d", ncw_out, NCW); end
-    if (errors == 0) $display("TEST PASSED tb_phy_ldpc_dec (%0d codewords bit-exact)", NCW);
+    if (errors == 0) $display("TEST PASSED tb_phy_ldpc_dec MODE=%0d (%0d codewords bit-exact)", MODE, NCW);
     else $display("TEST FAILED tb_phy_ldpc_dec errors=%0d", errors);
     $finish;
   end

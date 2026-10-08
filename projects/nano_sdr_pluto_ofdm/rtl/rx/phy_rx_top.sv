@@ -14,7 +14,7 @@ module phy_rx_top
 #(
   parameter int MAX_SYMS      = 8,
   parameter int W0_OFFSET     = 104,
-  parameter int WIN_DELAY     = 48,        // samples the window input lags the detector (arm latency margin: n_decl - n_best can reach TRACK_LEN)
+  parameter int WIN_DELAY     = 640,       // samples the window input lags the detector: n_decl - n_best can reach TRACK_LEN (704) at low SNR (peak early in the track window); w0 = n_best + 104 must still be ahead of the delayed stream when the arm arrives
   parameter int WATCHDOG_BITS = 24,
   parameter int FFT_MASK      = 32'h00F,
   parameter int DC_K          = 16,           // DC canceller time constant 2^K samples (K=12 left a 1-bit error at the band edge for CFO > 6 kHz, see phy_sim study)
@@ -26,6 +26,9 @@ module phy_rx_top
   input  logic [31:0]            cfg_rmin,
   input  logic signed [3:0]      cfg_gain_sh,
   input  logic                   cfg_mmse,         // coded mode: 1 = MMSE, 0 = ZF
+  input  logic                   cfg_smooth,       // coded mode: frequency smoothing of the LTS channel estimate (3 bins)
+  input  logic                   cfg_hdr_en,       // coded mode: take the mode from the header symbol (1) or from cfg_mode (0)
+  input  logic                   cfg_mode,         // coded mode: 0 = MAX RANGE (QPSK, LDPC 1/2), 1 = MAX RATE (16-QAM, LDPC 5/6); fallback when the header CRC fails
   input  logic [4:0]             cfg_max_iter,     // coded mode: LDPC iteration limit
   input  logic signed [12:0]     cfg_bad_thr,      // bad-subcarrier threshold (SNR code, 106 = 10 dB)
   input  logic                   cfg_ft_en,        // fine timing loop: shift the next packet's FFT window by the measured LTS timing error
@@ -60,7 +63,11 @@ module phy_rx_top
   output logic [15:0]            st_cw_count,     // decoded codewords / non-converged codewords since reset
   output logic [15:0]            st_cwfail_count,
   output logic signed [19:0]     st_tau_q8,       // fine timing of the last packet (1/256 sample, positive = window early)
-  output logic signed [7:0]      st_w0_adj        // current window correction [samples]
+  output logic signed [7:0]      st_w0_adj,       // current window correction [samples]
+  output logic                   st_mode,         // mode of the last packet (header or cfg_mode)
+  output logic                   st_hdr_ok,       // header CRC of the last packet ok
+  output logic                   st_hdr_mism,     // header nsyms differs from cfg_nsyms
+  output logic [13:0]            st_hdr_conf      // header soft-combining margin (min |sum|)
 );
   // ===================================================================== front end
   logic sv_i, sv_q; logic signed [IQ_W-1:0] si, sq;
@@ -144,7 +151,7 @@ module phy_rx_top
   logic ce_done; logic [10:0] eq_addr; logic [39:0] w_data; logic tau_valid; logic signed [19:0] tau_q8;
   logic [10:0] eg_ra, eg_wa; logic [39:0] eg_rw, eg_wd; logic signed [11:0] eg_rlg; logic eg_we; logic [41:0] sig_sum;
   phy_channel_estimator u_chest (
-    .clk, .rst(rst | be_rst), .in_valid(bs_valid & lts_q), .in_first(bs_first), .in_last(bs_last), .in_re(bs_re), .in_im(bs_im),
+    .clk, .rst(rst | be_rst), .cfg_smooth(CODED & cfg_smooth), .in_valid(bs_valid & lts_q), .in_first(bs_first), .in_last(bs_last), .in_re(bs_re), .in_im(bs_im),
     .done(ce_done), .rd_en(1'b1), .rd_addr(eq_addr), .rd_data(w_data),
     .eng_ra(eg_ra), .eng_rw(eg_rw), .eng_rlg(eg_rlg), .eng_we(eg_we), .eng_wa(eg_wa), .eng_wd(eg_wd), .sig_sum(sig_sum),
     .tau_valid, .tau_q8
@@ -209,15 +216,33 @@ module phy_rx_top
     if (rst) rssi_q <= '0; else if (rs_v) rssi_q <= rs_code;
   end
 
+  // symbol index at the tracker output (header = first symbol after the LTS) and the mode of the packet
+  logic [7:0] ptn;
+  logic       mode_q, hdr_seen, hdr_ok_q, hdr_mism_q;
+  logic       hd_valid, hd_ok, hd_mode; logic [7:0] hd_nsyms; logic [13:0] hd_conf, hdr_conf_q;
+  wire        in_hdr = CODED && (ptn == 8'd0);
+  always_ff @(posedge clk) begin
+    if (rst || be_rst || arm_valid) begin
+      ptn <= '0; mode_q <= cfg_mode; hdr_seen <= 1'b0; hdr_ok_q <= 1'b0; hdr_mism_q <= 1'b0; hdr_conf_q <= '0;
+    end else begin
+      if (pt_valid && pt_last) ptn <= (ptn == 8'hFF) ? ptn : ptn + 1'b1;
+      if (hd_valid) begin
+        hdr_seen <= 1'b1; hdr_ok_q <= hd_ok; hdr_mism_q <= (hd_nsyms != cfg_nsyms); hdr_conf_q <= hd_conf;
+        if (cfg_hdr_en && hd_ok) mode_q <= hd_mode;
+      end
+    end
+  end
+  assign st_mode = mode_q; assign st_hdr_ok = hdr_ok_q; assign st_hdr_mism = hdr_mism_q; assign st_hdr_conf = hdr_conf_q;
+
   logic dc_valid, dc_first, dc_last, il_ovf; logic [7:0] dc_data;
   logic ld_stat_valid, cw_pulse, cw_fail_pulse; logic [7:0] ld_fail; logic [4:0] ld_imax; logic [11:0] ld_isum;
   if (CODED) begin : g_dec_ldpc
     phy_rx_decode_ldpc u_dec (
       .clk, .rst(rst | be_rst), .nsyms(cfg_nsyms), .cfg_max_iter, .in_valid(pt_valid), .in_first(pt_first), .in_last(pt_last),
-      .in_re(pt_re), .in_im(pt_im), .prm_ra, .prm_rd,
+      .in_hdr, .mode(mode_q), .in_re(pt_re), .in_im(pt_im), .prm_ra, .prm_rd,
       .out_valid(dc_valid), .out_first(dc_first), .out_last(dc_last), .out_data(dc_data), .il_overflow(il_ovf),
       .stat_valid(ld_stat_valid), .stat_fail(ld_fail), .stat_iter_max(ld_imax), .stat_iter_sum(ld_isum),
-      .cw_pulse, .cw_fail_pulse
+      .cw_pulse, .cw_fail_pulse, .hdr_valid(hd_valid), .hdr_ok(hd_ok), .hdr_mode(hd_mode), .hdr_nsyms(hd_nsyms), .hdr_conf(hd_conf)
     );
   end else begin : g_dec_hard
     phy_rx_decode u_dec (
@@ -226,6 +251,7 @@ module phy_rx_top
     );
     assign prm_ra = '0; assign ld_stat_valid = 1'b0; assign ld_fail = '0; assign ld_imax = '0; assign ld_isum = '0;
     assign cw_pulse = 1'b0; assign cw_fail_pulse = 1'b0;
+    assign hd_valid = 1'b0; assign hd_ok = 1'b0; assign hd_mode = 1'b0; assign hd_nsyms = '0; assign hd_conf = '0;
   end
 
   // residual CFO / SFO observables of the packet: CPE angle of the first data symbol and phase slope of the last one
@@ -269,10 +295,10 @@ module phy_rx_top
   logic [15:0] po_drop, po_cnt;
   logic [7:0]  flags_q;
   logic        late_seen;
-  wire  [15:0] nbytes_total = 16'(cfg_nsyms) * 16'(CODED ? 450 : BYTES_PER_OFDM);
+  wire  [15:0] nbytes_total = 16'(cfg_nsyms) * (CODED ? (mode_q ? 16'd450 : 16'd135) : 16'(BYTES_PER_OFDM));
   wire [63:0] hdr_b3 = {st_snr_avg, st_snr_min, st_bad, st_noise};
   wire [63:0] hdr_b5 = {angle_first, slope_last};
-  wire [63:0] hdr_b4 = {fail_l, 3'b0, imax_l, 4'b0, isum_l, 6'b0, cfg_mmse, CODED, 4'd0, st_tau_q8};
+  wire [63:0] hdr_b4 = {fail_l, 3'b0, imax_l, 4'b0, isum_l, 6'b0, cfg_mmse, CODED, hdr_mism_q, hdr_ok_q, mode_q, CODED, st_tau_q8};   // [23:20] = {hdr nsyms mismatch, hdr crc ok, MODE_ID, dual-mode}
   phy_rx_pkt_out #(.RAM_BYTES(MAX_SYMS * BYTES_PER_OFDM), .HDR_V3(CODED)) u_pkt (
     .clk, .rst, .wr_en(dc_valid), .wr_addr(wr_addr_cur), .wr_data(dc_data),
     .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle), .c_rssi(rssi_q), .c_evm(evm_acc), .c_b3(hdr_b3), .c_b4(hdr_b4), .c_b5(hdr_b5),
@@ -289,7 +315,7 @@ module phy_rx_top
   logic [2:0]  rst_cnt;
   logic        wd_hit;
 
-  assign flags_q = {2'b0, (fail_l != 8'd0), prm_late, late_seen, fft_overflow, pt_overrun, il_ovf};
+  assign flags_q = {(CODED && cfg_hdr_en && !hdr_ok_q), 1'b0, (fail_l != 8'd0), prm_late, late_seen, fft_overflow, pt_overrun, il_ovf};
   // fine timing loop (coded mode): w0_adj += (tau - target) / 2 per packet, clamped to +-40 samples
   logic signed [7:0] w0_adj;
   wire  signed [20:0] tau_err = 21'(tau_q8) - $signed({1'b0, cfg_tau_tgt, 8'd0});
@@ -332,7 +358,7 @@ module phy_rx_top
           fw_cnt <= '0; dec_done <= 1'b0;
           if (ev_valid) begin
             st_det_count <= st_det_count + 1'b1;
-            nbest_q <= ev_n_best; w0_q <= ev_n_best + 32'(W0_OFFSET) + 32'($signed(w0_adj)); nwin_q <= cfg_nsyms + 8'd1;
+            nbest_q <= ev_n_best; w0_q <= ev_n_best + 32'(W0_OFFSET) + 32'($signed(w0_adj)); nwin_q <= cfg_nsyms + 8'd1 + 8'(CODED);   // LTS [+ header] + data
             late_seen <= 1'b0;
             cfo_start <= 1'b1; cst <= C_CFO;
           end

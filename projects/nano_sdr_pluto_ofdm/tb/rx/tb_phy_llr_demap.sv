@@ -1,12 +1,13 @@
 // Self-checking TB: phy_llr_demap vs python/phy2_fixed_ref.py::demap_soft (bit-exact 6 bit LLRs), 3 symbols x 1100 bins, random valid gaps
 // (garbage on idle cycles), first/last flags, parameter RAM modelled with a 1-cycle synchronous read.
-module tb_phy_llr_demap;
+module tb_phy_llr_demap #(parameter int QP = 0);     // 1: QPSK path (llq_* vectors)
   localparam int NB = 1100, NS = 3;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
   logic [31:0] stim [NS * NB];
   logic [23:0] expd [NS * NB];
   logic [28:0] prm [NB];
+  logic qpsk = QP[0];
   logic in_valid = 0, in_first = 0, in_last = 0; logic signed [15:0] in_re = 0, in_im = 0;
   logic [10:0] rd_addr; logic [28:0] rd_data;
   logic out_valid, out_first, out_last; logic signed [5:0] out_llr [4];
@@ -27,8 +28,8 @@ module tb_phy_llr_demap;
   initial begin
     for (int i = 0; i < NB; i++) prm[i] = 29'd0;
     begin logic [31:0] t [NB]; $readmemh("vec/llr_prm.mem", t); for (int i = 0; i < NB; i++) prm[i] = t[i][28:0]; end
-    $readmemh("vec/llr_in.mem", stim);
-    $readmemh("vec/llr_exp.mem", expd);
+    $readmemh(QP ? "vec/llq_in.mem" : "vec/llr_in.mem", stim);
+    $readmemh(QP ? "vec/llq_exp.mem" : "vec/llr_exp.mem", expd);
     repeat (4) @(posedge clk); #1; rst = 0; repeat (2) @(posedge clk);
     for (int s = 0; s < NS; s++) begin
       for (int i = 0; i < NB; i++) begin
@@ -41,7 +42,7 @@ module tb_phy_llr_demap;
     end
     repeat (20) @(posedge clk);
     if (nout !== NS * NB) begin errors++; $display("outputs %0d != %0d", nout, NS * NB); end
-    if (errors == 0) $display("TEST PASSED tb_phy_llr_demap (%0d bins bit-exact)", nout);
+    if (errors == 0) $display("TEST PASSED tb_phy_llr_demap QP=%0d (%0d bins bit-exact)", QP, nout);
     else $display("TEST FAILED tb_phy_llr_demap errors=%0d", errors);
     $finish;
   end

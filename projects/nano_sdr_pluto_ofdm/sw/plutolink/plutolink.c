@@ -42,7 +42,8 @@
 #define PHY_BASE       0x7C440000u
 #define PHY_SPAN       0x1000u
 #define BYTES_UNCODED  550
-#define BYTES_CODED    450      /* LDPC R=5/6: 2 codewords x 225 bytes per OFDM symbol */
+#define BYTES_CODED    450      /* MAX RATE: 16-QAM, LDPC R=5/6: 2 codewords x 225 bytes per OFDM symbol */
+#define BYTES_RANGE    135      /* MAX RANGE: QPSK, LDPC R=1/2: 1 codeword x 135 bytes per OFDM symbol */
 #define PHY_FS_HZ      30720000.0
 #define REG_ID         0x00
 #define REG_CTRL       0x04
@@ -65,7 +66,8 @@
 #define REG_FEATURE_W  31     /* status word 31: bit0 = coded PHY */
 
 static int g_coded;           /* set from the PHY feature word (or --coded / --uncoded) */
-static inline int bytes_per_sym(void) { return g_coded ? BYTES_CODED : BYTES_UNCODED; }
+static int g_mode = 1;        /* dual-mode PHY: 0 = MAX RANGE (QPSK + LDPC 1/2), 1 = MAX RATE (16-QAM + LDPC 5/6) */
+static inline int bytes_per_sym(void) { return g_coded ? (g_mode ? BYTES_CODED : BYTES_RANGE) : BYTES_UNCODED; }
 
 static volatile sig_atomic_t g_stop;
 static void on_sig(int s) { (void)s; g_stop = 1; }
@@ -201,7 +203,7 @@ struct phy_rec {
 	/* v3 (coded PHY): channel quality, LDPC statistics, fine timing, SFO slope */
 	int16_t snr_avg_code, snr_min_code, noise_code;
 	uint16_t bad_sc;
-	uint8_t ldpc_fail, ldpc_iter_max, mode_bits;
+	uint8_t ldpc_fail, ldpc_iter_max, mode_bits, hdr_bits;     /* hdr_bits = {header nsyms mismatch, header CRC ok, MODE_ID, dual-mode} */
 	uint16_t ldpc_iter_sum;
 	int32_t tau_q8;
 	uint32_t angle_first;
@@ -243,6 +245,7 @@ static size_t phy_parse(const uint8_t *acc, size_t len, unsigned expect_nbytes, 
 				r->noise_code = (int16_t)rd16(p + 24);
 				r->tau_q8 = (int32_t)(rd32(p + 32) << 12) >> 12;   /* beat 4 = {fail, imax, isum, mode, 4'b0, tau20} */
 				r->mode_bits = p[35];
+				r->hdr_bits = p[34] >> 4;
 				r->ldpc_iter_sum = rd16(p + 36) & 0xFFF;
 				r->ldpc_iter_max = p[38] & 0x1F;
 				r->ldpc_fail = p[39];
@@ -523,6 +526,7 @@ struct opts {
 	int bytes_chunk;
 	int force_coded;          /* -1 = auto from the PHY feature word */
 	int mmse, max_iter, ft_en, tau_tgt;
+	int mode, hdr_en, smooth;      /* dual-mode PHY: --mode 0|1, RX: --hdr 0|1 (mode from the header symbol), --smooth 0|1 */
 	double bad_snr_db;
 };
 
@@ -545,6 +549,7 @@ static void usage(void)
 	     "  --rx-gain DB       manual RX gain (default 40)    --agc        slow-attack AGC instead of manual gain\n"
 	     "  --rmin N           detector energy gate           --gain-sh N  digital gain shift before the detector (-8..7)\n"
 	     "  --mmse 0|1         coded PHY: ZF / MMSE equalizer (default 1)    --max-iter N  LDPC iteration limit (default 10)\n"
+	     "  --hdr 0|1          take the PHY mode from the header symbol (default 1; 0 = use --mode)    --smooth 0|1  channel estimate smoothing (default 1)\n"
 	     "  --no-ft            disable the fine-timing loop   --tau-tgt N   wanted LTS window earliness in samples (default 56)\n"
 	     "  --bad-snr DB       a subcarrier is bad below this SNR (default 10 dB)    --coded/--uncoded  override the PHY mode detection\n"
 	     "WARNING: use cables + 30..60 dB of attenuation between the boards for the first runs (the receiver front end is easy to overload).");
@@ -563,6 +568,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 	o->fs_hz = PHY_FS_HZ;
 	o->force_coded = -1;
 	o->mmse = 1;
+	o->mode = 1; o->hdr_en = 1; o->smooth = 1;
 	o->max_iter = 10;
 	o->ft_en = 1;
 	o->tau_tgt = 56;
@@ -586,6 +592,9 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		else if (!strcmp(a, "--coded")) o->force_coded = 1;
 		else if (!strcmp(a, "--uncoded")) o->force_coded = 0;
 		else if (ARG("--mmse")) o->mmse = atoi(argv[++i]);
+		else if (ARG("--mode")) o->mode = atoi(argv[++i]);
+		else if (ARG("--hdr")) o->hdr_en = atoi(argv[++i]);
+		else if (ARG("--smooth")) o->smooth = atoi(argv[++i]);
 		else if (ARG("--max-iter")) o->max_iter = atoi(argv[++i]);
 		else if (!strcmp(a, "--no-ft")) o->ft_en = 0;
 		else if (ARG("--tau-tgt")) o->tau_tgt = atoi(argv[++i]);
@@ -605,6 +614,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 			return -1;
 		}
 	}
+	g_mode = o->mode ? 1 : 0;
 	if (o->nsyms < 1 || o->nsyms > 8) {
 		fprintf(stderr, "--nsyms must be 1..8\n");
 		return -1;
@@ -734,7 +744,7 @@ static void rx_handle(const struct phy_rec *r, const struct opts *o, struct rx_a
 		snr_avg = r->snr_avg_code * k_db;
 		snr_min = r->snr_min_code * k_db;
 		tau = r->tau_q8 / 256.0;
-		it_avg = (double)r->ldpc_iter_sum / (2 * o->nsyms);
+		it_avg = (double)r->ldpc_iter_sum / ((((r->hdr_bits >> 1) & 1) ? 2 : 1) * o->nsyms);
 		double slope = (double)r->slope / 4294967296.0 * 2.0 * M_PI;                 /* rad per bin at the last data symbol */
 		sfo_ppm = slope * 2048.0 / (2.0 * M_PI) / ((double)o->nsyms * SYM_LEN) * 1e6;
 		if (o->nsyms > 1) {
@@ -781,10 +791,10 @@ static int run_rx(const struct opts *o)
 		wreg(REG_CFG0 + 4, o->rmin);
 	wreg(REG_CFG0 + 8, (uint32_t)o->gain_sh & 0xF);
 	if (g_coded) {
-		wreg(REG_CFG0 + 12, o->mmse);
+		wreg(REG_CFG0 + 12, (uint32_t)(o->mmse | (o->hdr_en << 1) | (o->mode << 2)));      /* MMSE | HDR_EN | MODE (fallback / manual) */
 		wreg(REG_CFG0 + 16, o->max_iter);
 		wreg(REG_CFG0 + 20, (uint32_t)lround(o->bad_snr_db / 0.0941) & 0x1FFF);
-		wreg(REG_CFG0 + 24, o->ft_en);
+		wreg(REG_CFG0 + 24, (uint32_t)(o->ft_en | (o->smooth << 1)));
 		wreg(REG_CFG0 + 28, o->tau_tgt);
 	}
 	wreg(REG_CTRL, 0);
@@ -916,7 +926,7 @@ static int run_tx(const struct opts *o)
 	usleep(1000);
 	wreg(REG_CFG0 + 0, 16384);
 	wreg(REG_CFG0 + 4, o->gap_samples);
-	wreg(REG_CFG0 + 8, 1);
+	wreg(REG_CFG0 + 8, (uint32_t)(1 | (o->mode << 1)));            /* ENABLE | MODE (0 = MAX RANGE, 1 = MAX RATE) */
 	wreg(REG_CTRL, 0);
 	usleep(1000);
 	wreg(REG_CTRL, 2);

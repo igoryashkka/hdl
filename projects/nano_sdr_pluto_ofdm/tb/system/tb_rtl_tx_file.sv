@@ -1,5 +1,6 @@
 // File-driven TX testbench for the Python framework (phy_sim RtlSimTxBackend).
-//   input : rtl_tx_in.mem  (NB lines, 3 hex digits {last,byte}: packets back to back, last marks the final byte of a packet)
+//   input : rtl_tx_in.mem  (NB lines, 3 hex digits {mode, last, byte}: packets back to back, last marks the final byte of a packet,
+//           mode = MODE_ID of the packet: 0 MAX RANGE (QPSK, LDPC 1/2), 1 MAX RATE (16-QAM, LDPC 5/6); all bytes of a packet carry the same mode)
 //   output: rtl_tx_out.txt
 //     META <nbytes> <npackets> <clks_per_sample>
 //     I <hex8>          IQ sample {I16,Q16} while valid          Z <n>   n sample strobes without data (idle / underflow)
@@ -13,12 +14,13 @@ module tb_rtl_tx_file #(
 );
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
-  logic [8:0]  bytes_mem [NB];
+  logic [9:0]  bytes_mem [NB];
+  logic        cfg_mode = 1'b1;
   logic [15:0] gain = GAIN;
   logic s_valid = 0, s_ready, s_last = 0; logic [7:0] s_data = 0;
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
-  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
+  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .cfg_mode, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
                   .underflow, .overflow, .pkt_trunc, .pkt_done, .busy);
 
   int fd, cyc = 0, t_first_byte = -1, t_last_byte = -1, t_p0_last_byte = -1, t_first_iq = -1, t_last_iq = -1, n_under = 0, n_done = 0;
@@ -55,7 +57,7 @@ module tb_rtl_tx_file #(
     repeat (6) @(posedge clk); #1; rst = 0; repeat (4) @(posedge clk);
     @(posedge clk); #1;
     for (int i = 0; i < NB; i++) begin
-      s_valid = 1; s_data = bytes_mem[i][7:0]; s_last = bytes_mem[i][8];
+      s_valid = 1; s_data = bytes_mem[i][7:0]; s_last = bytes_mem[i][8]; cfg_mode = bytes_mem[i][9];
       if (t_first_byte < 0) t_first_byte = cyc;
       do @(posedge clk); while (!s_ready);          // accepted at this edge (pre-edge s_ready)
       t_last_byte = cyc;

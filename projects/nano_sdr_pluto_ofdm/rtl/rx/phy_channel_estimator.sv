@@ -6,7 +6,9 @@
 //   through (rd_en, rd_addr) -> rd_data (1 cycle). `done` pulses when the last weight of the frame has been written.
 //   Side output: lg code of |G|^2 per bin (p*32 + LGT[top 5 fraction bits], -1000 for 0; golden phy2_fixed_ref.chest_lg) in a
 //   12 bit RAM; a mirror copy of the weight RAM + that RAM are read by the MMSE post engine (eng_*), which can rewrite the weights.
-// Latency: 18 cycles from in_valid to the RAM write of the same bin.  Throughput 1 bin/cycle (valid-only).
+//   cfg_smooth = 1 inserts phy_g_smooth (3-bin moving average of G, +5 cycles, 2 DSP) in front of every use of G (weights, log codes, sum, fine timing):
+//   the channel estimate keeps the LTS, but its noise drops by 9.5 dB (static per packet).
+// Latency: 18 cycles from in_valid to the RAM write of the same bin (+ ~11 with cfg_smooth).  Throughput 1 bin/cycle (valid-only).
 // DSP: 6 multipliers (2 squares, M*y0, y0*e, 2 weight products).   Golden: python/rx_fixed_ref.py::chest (bit-exact)
 module phy_channel_estimator
   import phy_pkg::*;
@@ -14,6 +16,7 @@ module phy_channel_estimator
 (
   input  logic                   clk,
   input  logic                   rst,
+  input  logic                   cfg_smooth,
   input  logic                   in_valid,
   input  logic                   in_first,
   input  logic                   in_last,
@@ -71,12 +74,25 @@ module phy_channel_estimator
     gr_b <= sgn_sat(ya_r, sa); gi_b <= sgn_sat(ya_i, sa); ab <= aa;
   end
 
+  // optional frequency smoothing of G (aligned bin stream with its own flags)
+  logic                   sm_v, sm_f, sm_l; logic [10:0] sm_a; logic signed [IQ_W-1:0] sm_r, sm_i;
+  phy_g_smooth u_sm (
+    .clk, .rst, .in_valid(vb), .in_first(fb), .in_last(lb), .in_re(gr_b), .in_im(gi_b),
+    .out_valid(sm_v), .out_first(sm_f), .out_last(sm_l), .out_addr(sm_a), .out_re(sm_r), .out_im(sm_i)
+  );
+  wire                   c_v = cfg_smooth ? sm_v : vb;
+  wire                   c_l = cfg_smooth ? sm_l : lb;
+  wire                   c_f = cfg_smooth ? sm_f : fb;
+  wire [10:0]            c_a = cfg_smooth ? sm_a : ab;
+  wire signed [IQ_W-1:0] c_r = cfg_smooth ? sm_r : gr_b;
+  wire signed [IQ_W-1:0] c_i = cfg_smooth ? sm_i : gi_b;
+
   // ---------------------------------------------------------------- C: squares ; D: |G|^2
   logic vc, lc; logic [10:0] ac; logic signed [IQ_W-1:0] gr_c, gi_c; logic [31:0] sq_r, sq_i;
   always_ff @(posedge clk) begin
-    if (rst) begin vc <= 1'b0; lc <= 1'b0; end else begin vc <= vb; lc <= lb; end
-    fc <= fb;
-    sq_r <= 32'(gr_b) * 32'(gr_b); sq_i <= 32'(gi_b) * 32'(gi_b); gr_c <= gr_b; gi_c <= gi_b; ac <= ab;
+    if (rst) begin vc <= 1'b0; lc <= 1'b0; end else begin vc <= c_v; lc <= c_l; end
+    fc <= c_f;
+    sq_r <= 32'(c_r) * 32'(c_r); sq_i <= 32'(c_i) * 32'(c_i); gr_c <= c_r; gi_c <= c_i; ac <= c_a;
   end
   logic vd, ld; logic [10:0] ad; logic signed [IQ_W-1:0] gr_d, gi_d; logic [31:0] m_d;
   always_ff @(posedge clk) begin

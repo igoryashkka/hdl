@@ -4,7 +4,7 @@
 // packets, minimum gap (cfg GAP) between the end of the first and the start of the second packet, enable=0 blocks the
 // stream, registers (counters, config readback, clear). DAC strobe every 2nd clock; PS bus on an unrelated clock.
 module tb_phy_tx_axis_top;
-  localparam int SYM = 2192, NA = 4 * SYM, NB = 4 * SYM, GAPS = 3000;
+  localparam int SYM = 2192, NA = 5 * SYM, NB = 5 * SYM, GAPS = 3000;      // frame: sync, LTS, header, 2 data symbols
   logic clk = 0, aclk = 0, rst = 1, aresetn = 0;
   always #5 clk = ~clk;
   always #6.5 aclk = ~aclk;
@@ -99,7 +99,7 @@ module tb_phy_tx_axis_top;
       begin
         repeat (GAPS * 3) @(posedge clk);
         if (dut.n_beat !== 0) begin errors++; $display("accepted beats while disabled: %0d", dut.n_beat); end
-        axi_write(12'h018, 1);
+        axi_write(12'h018, 3);        // ENABLE (bit0) + MODE = 1 (bit1, MAX RATE)
       end
     join
     repeat (400000) begin @(posedge clk); if (nout == NA + NB) break; end

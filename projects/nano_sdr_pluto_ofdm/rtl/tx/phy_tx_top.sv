@@ -1,5 +1,8 @@
-// Module : phy_tx_top   OFDM PHY transmitter (uncoded mode; LDPC slot reserved between scrambler and interleaver).
-//   bytes -> packet buffer -> scrambler -> nibbles -> interleaver -> 16-QAM mapper -> OFDM mapper -> pilot insert
+// Module : phy_tx_top   OFDM PHY transmitter, uncoded legacy mode (CODED = 0) or dual-mode coded PHY (CODED = 1, cfg_mode):
+//   cfg_mode = 0 MAX RANGE: QPSK + LDPC 1/2 (135 payload bytes per OFDM symbol)   cfg_mode = 1 MAX RATE: 16-QAM + LDPC 5/6 (450 bytes).
+//   Coded frame = [sync][LTS][header symbol][data symbols]; the header symbol (phy_hdr_gen, QPSK, repetition coded) carries MODE_ID and nsyms.
+//   cfg_mode is sampled with the first byte of a packet and must be static until the packet is complete (switch only between packets).
+//   bytes -> packet buffer -> scrambler -> nibbles -> interleaver -> QAM mapper -> OFDM mapper -> pilot insert
 //   -> (mux with preamble) -> IFFT -> digital scaler -> bit-reverse + cyclic prefix buffer -> IQ (pulled at sample rate)
 // Packet: s_valid/s_ready/s_data/s_last; payload is padded with zeros to a multiple of BYTES_PER_OFDM (550) bytes
 //   (one OFDM symbol). Max TX_MAX_SYMS symbols (4400 bytes); longer packets are truncated (pkt_trunc flag).
@@ -19,6 +22,7 @@ module phy_tx_top
   input  logic                   clk,
   input  logic                   rst,
   input  logic [15:0]            gain,           // Q2.14, 16384 = 1.0
+  input  logic                   cfg_mode,       // coded PHY: 0 = MAX RANGE (QPSK, 1/2), 1 = MAX RATE (16-QAM, 5/6)
   // packet bytes
   input  logic                   s_valid,
   output logic                   s_ready,
@@ -36,7 +40,6 @@ module phy_tx_top
   output logic                   pkt_done,
   output logic                   busy
 );
-  localparam int BPS       = CODED ? 450 : BYTES_PER_OFDM;     // payload bytes per OFDM symbol
   localparam int BUF_BYTES = MAX_SYMS * BYTES_PER_OFDM;
   localparam int BAW       = $clog2(BUF_BYTES);
 
@@ -46,6 +49,9 @@ module phy_tx_top
   logic [BAW:0]   pkt_len;                    // bytes stored
   logic [9:0]     sym_byte_cnt;
   logic [7:0]     nsyms_acc, pkt_nsyms;
+  logic           wr_mode, pkt_mode;          // mode of the packet being written / of the packet being sent
+  wire  [9:0]     bps_w = CODED ? (wr_mode ? 10'd450 : 10'd135) : 10'(BYTES_PER_OFDM);   // payload bytes per OFDM symbol
+  wire            wr_mode_n = (wr_ptr == '0) ? cfg_mode : wr_mode;                          // the first byte already counts with the new mode
   logic           pkt_valid;                  // a complete packet is waiting for / being sent
   logic           rd_busy;                    // reader is streaming the packet out of the buffer
   logic           go_ready;
@@ -58,12 +64,13 @@ module phy_tx_top
 
   always_ff @(posedge clk) begin
     if (wr_en) bbuf[wr_ptr] <= s_data;
+    if (wr_en && wr_ptr == '0) wr_mode <= cfg_mode;
     if (rst) begin
       wr_ptr <= '0; pkt_len <= '0; sym_byte_cnt <= '0; nsyms_acc <= '0; pkt_nsyms <= '0;
-      pkt_valid <= 1'b0; pkt_trunc <= 1'b0;
+      pkt_valid <= 1'b0; pkt_trunc <= 1'b0; wr_mode <= 1'b1;
     end else begin
       if (wr_en) begin
-        if (sym_byte_cnt == 10'(BPS - 1)) begin sym_byte_cnt <= '0; nsyms_acc <= nsyms_acc + 1'b1; end
+        if (sym_byte_cnt == (CODED ? (wr_mode_n ? 10'd449 : 10'd134) : 10'(BYTES_PER_OFDM - 1))) begin sym_byte_cnt <= '0; nsyms_acc <= nsyms_acc + 1'b1; end
         else sym_byte_cnt <= sym_byte_cnt + 1'b1;
         if (wr_end) begin
           pkt_len   <= (BAW+1)'(wr_ptr) + 1'b1;
@@ -89,7 +96,7 @@ module phy_tx_top
 
   phy_tx_frame_ctrl u_ctrl (
     .clk, .rst,
-    .go_valid, .go_ready, .go_nsyms(pkt_nsyms),
+    .go_valid, .go_ready, .go_nsyms(pkt_nsyms + 8'(CODED)),
     .pre_start_valid, .pre_start_ready, .pre_start_kind,
     .map_start_valid, .map_start_ready,
     .sym_end, .flush_valid, .frame_written, .sym_done,
@@ -114,9 +121,10 @@ module phy_tx_top
     end else begin
       if (go_valid && go_ready) begin
         pkt_taken   <= 1'b1;
+        pkt_mode    <= wr_mode;
         rd_busy     <= 1'b1;
         rd_idx      <= '0;
-        total_bytes <= (BAW+1)'(pkt_nsyms) * (BAW+1)'(BPS);
+        total_bytes <= (BAW+1)'(pkt_nsyms) * (CODED ? (wr_mode ? (BAW+1)'(450) : (BAW+1)'(135)) : (BAW+1)'(BYTES_PER_OFDM));
       end
       a_v <= rd_issue;
       if (rd_issue) begin
@@ -151,8 +159,8 @@ module phy_tx_top
     // bytes -> LDPC encoder (225 bytes per codeword, 2 codewords + 20 filler nibbles per OFDM symbol) -> nibbles
     logic       enc_in_ready, enc_out_valid;
     logic [3:0] enc_out_data;
-    phy_ldpc_enc #(.CW_PER_SYM(2), .FILL_NIBBLES(20)) u_enc (
-      .clk, .rst, .in_valid(bf_rd_valid), .in_ready(enc_in_ready), .in_data(bf_rd_data),
+    phy_ldpc_enc #(.FILL_WORDS(20)) u_enc (
+      .clk, .rst, .cfg_mode(pkt_mode), .in_valid(bf_rd_valid), .in_ready(enc_in_ready), .in_data(bf_rd_data),
       .out_valid(enc_out_valid), .out_ready(il_in_ready), .out_data(enc_out_data)
     );
     assign bf_rd_ready = enc_in_ready;
@@ -172,7 +180,7 @@ module phy_tx_top
   logic       il_out_valid, il_out_ready, il_first, il_last;
   logic [3:0] il_out_data;
   phy_interleaver #(.WORD_W(BITS_PER_SYM), .ROT_UNIT(1)) u_il (
-    .clk, .rst,
+    .clk, .rst, .rot_en(CODED ? pkt_mode : 1'b1),
     .in_valid(il_in_valid), .in_ready(il_in_ready), .in_data(il_in_data),
     .out_valid(il_out_valid), .out_ready(il_out_ready), .out_data(il_out_data),
     .out_first(il_first), .out_last(il_last)
@@ -185,14 +193,45 @@ module phy_tx_top
   logic [2*IQ_W-1:0]      qf_rd_data;
   logic [3:0]             qf_count;
 
-  assign il_out_ready = (qf_count <= 4'd5);
+  logic                   hdr_pend, hdr_busy, hdr_busy_q, hdr_valid, go_fire;
+  logic signed [IQ_W-1:0] hdr_i, hdr_q;
+  assign go_fire = go_valid && go_ready;
+  assign il_out_ready = (qf_count <= 4'd5) && !(CODED && hdr_pend);
+  logic                   qm16_valid, qmq_valid;
+  logic signed [IQ_W-1:0] qm16_i, qm16_q, qmq_i, qmq_q;
   phy_qam_mapper #(.ORDER(QAM_ORDER)) u_qam (
     .clk, .rst, .in_valid(il_out_valid & il_out_ready), .in_last(1'b0), .in_bits(il_out_data),
-    .out_valid(qm_valid), .out_last(), .out_i(qm_i), .out_q(qm_q)
+    .out_valid(qm16_valid), .out_last(), .out_i(qm16_i), .out_q(qm16_q)
   );
+  phy_qam_mapper #(.ORDER(4), .UNIT(QPSK_UNIT)) u_qpsk (
+    .clk, .rst, .in_valid(il_out_valid & il_out_ready), .in_last(1'b0), .in_bits(il_out_data[1:0]),
+    .out_valid(qmq_valid), .out_last(), .out_i(qmq_i), .out_q(qmq_q)
+  );
+  wire qpsk_sel = CODED && !pkt_mode;
+  assign qm_valid = qpsk_sel ? qmq_valid : qm16_valid;
+  assign qm_i     = qpsk_sel ? qmq_i : qm16_i;
+  assign qm_q     = qpsk_sel ? qmq_q : qm16_q;
+
+  // header symbol: 1100 QPSK bins that go into the symbol FIFO ahead of the data bins
+  wire hdr_ready = (qf_count <= 4'd5);
+  if (CODED) begin : g_hdr
+    phy_hdr_gen u_hdr (
+      .clk, .rst, .start(go_fire), .mode(wr_mode), .nsyms(pkt_nsyms), .out_valid(hdr_valid), .out_ready(hdr_ready),
+      .out_i(hdr_i), .out_q(hdr_q), .busy(hdr_busy)
+    );
+  end else begin : g_nohdr
+    assign hdr_valid = 1'b0; assign hdr_i = '0; assign hdr_q = '0; assign hdr_busy = 1'b0;
+  end
+  always_ff @(posedge clk) begin
+    hdr_busy_q <= hdr_busy;
+    if (rst) hdr_pend <= 1'b0;
+    else if (go_fire && CODED) hdr_pend <= 1'b1;
+    else if (hdr_pend && hdr_busy_q && !hdr_busy) hdr_pend <= 1'b0;
+  end
 
   phy_fifo #(.W(2*IQ_W), .DEPTH(8)) u_qfifo (
-    .clk, .rst, .wr_valid(qm_valid), .wr_ready(qf_wr_ready), .wr_data({qm_i, qm_q}),
+    .clk, .rst, .wr_valid(hdr_busy ? (hdr_valid & hdr_ready) : qm_valid), .wr_ready(qf_wr_ready),
+    .wr_data(hdr_busy ? {hdr_i, hdr_q} : {qm_i, qm_q}),
     .rd_valid(qf_rd_valid), .rd_ready(qf_rd_ready), .rd_data(qf_rd_data), .count(qf_count)
   );
 

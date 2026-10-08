@@ -13,6 +13,7 @@ module tb_phy_interleaver #(
   logic [31:0] expd [MAXN];
   logic in_valid = 0; logic [WORD_W-1:0] in_data = 0;
   logic in_ready, out_valid, out_ready = 0, out_first, out_last; logic [WORD_W-1:0] out_data;
+  logic rot_en = 1'b1;
   phy_interleaver #(.WORD_W(WORD_W), .ROT_UNIT(ROT_UNIT), .ROWS(ROWS), .COLS(COLS), .DEINT(DEINT)) dut (.*);
 
   int errors = 0, nout = 0, ns = 0, ne = 0;

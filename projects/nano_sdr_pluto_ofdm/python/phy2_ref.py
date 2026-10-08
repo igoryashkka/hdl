@@ -20,6 +20,42 @@ import ofdm_ref
 import scrambler_ref
 from phy_params import (BYTES_PER_OFDM, FFT_SIZE, NUM_ACTIVE_SC, NUM_DATA_SC, PILOT_AMP, QAM_UNIT)
 
+# dual mode (ТЗ 003): MODE_ID 0 = MAX RANGE (QPSK, LDPC 1/2, 135 bytes / symbol), 1 = MAX RATE (16-QAM, LDPC 5/6, 450 bytes / symbol).
+# The ablation study also uses the other combinations (a tuple (modulation, rate) instead of a mode id, python only):
+# ("qpsk", "r56") = 225 bytes / symbol (one codeword), ("16qam", "r12") = 270 bytes / symbol (two codewords).
+MODES = {0: ("qpsk", "r12"), 1: ("16qam", "r56")}
+MODE_NAMES = {0: "MAX_RANGE", 1: "MAX_RATE"}
+
+
+def layout(mode) -> dict:
+    """mode: 0 / 1 (MODE_ID) or a (modulation, code) tuple -> dict(mod, bits per bin, code, base, k, cw per symbol, bytes per symbol)."""
+    mod, code = MODES[int(mode)] if not isinstance(mode, tuple) else mode
+    bits = 2 if mod == "qpsk" else 4
+    base = ldpc_ref.CODES[code]
+    k = ldpc_ref.code_info_bits(base)
+    cw = (NUM_DATA_SC * bits) // ldpc_ref.N
+    return {"mod": mod, "bits": bits, "code": code, "base": base, "k": k, "cw": cw, "bytes": cw * k // 8,
+            "id": (0 if mod == "qpsk" and code == "r12" else 1 if mod == "16qam" and code == "r56" else None),
+            "fill": (np.arange(NUM_DATA_SC * bits - cw * ldpc_ref.N) & 1).astype(np.uint8)}
+
+
+def mode_base(mode):
+    return layout(mode)["base"]
+
+
+def mode_k(mode) -> int:
+    return layout(mode)["k"]
+
+
+def info_bytes_per_sym(mode) -> int:
+    return layout(mode)["bytes"]
+
+
+def fill_bits(mode) -> np.ndarray:
+    """filler bits that complete a symbol (alternating 0 / 1): 80 for 16-QAM (4400 - 4320), 40 for QPSK (2200 - 2160)."""
+    return layout(mode)["fill"]
+
+
 CODE_K = ldpc_ref.K                    # 1800 info bits per codeword
 CODE_N = ldpc_ref.N                    # 2160
 CW_PER_SYM = 2
@@ -35,18 +71,25 @@ def bytes_per_sym(code: str) -> int:
 
 
 # ------------------------------------------------------------------ TX
-def tx_words(payload: bytes, nsym: int, code: str = "ldpc") -> list[int]:
-    """Interleaved nibble words (nsym * 1100) of the data symbols."""
-    bps = bytes_per_sym(code)
+def tx_words(payload: bytes, nsym: int, code: str = "ldpc", mode: int = 1) -> list[int]:
+    """Interleaved words (nsym * 1100) of the data symbols: 16-QAM nibbles (mode 1) or 2 bit QPSK words {I, Q} (mode 0, no rotation)."""
+    if code != "ldpc":
+        bps = bytes_per_sym(code)
+    else:
+        bps = info_bytes_per_sym(mode)
     data = list(payload) + [0] * (nsym * bps - len(payload))
     sc = np.array(scrambler_ref.scramble(data), dtype=np.uint8)
     bits = np.unpackbits(sc)
     if code != "ldpc":
         allbits = bits
     else:
-        info = bits.reshape(nsym * CW_PER_SYM, CODE_K)
-        cw = ldpc_ref.encode(info).reshape(nsym, CODED_BITS)
-        allbits = np.concatenate([cw, np.tile(FILL, (nsym, 1))], axis=1).reshape(-1)
+        m = layout(mode)
+        info = bits.reshape(nsym * m["cw"], m["k"])
+        cw = ldpc_ref.encode(info, m["base"]).reshape(nsym, m["cw"] * ldpc_ref.N)
+        allbits = np.concatenate([cw, np.tile(m["fill"], (nsym, 1))], axis=1).reshape(-1)
+        if m["mod"] == "qpsk":
+            w = allbits.reshape(-1, 2)
+            return ilr.interleave([int(a) << 1 | int(b) for a, b in w], 4, 0)
     w = allbits.reshape(-1, 4)
     words = [int(a) << 3 | int(b) << 2 | int(c) << 1 | int(d) for a, b, c, d in w]
     return ilr.interleave(words, 4, 1)
@@ -67,12 +110,15 @@ def _deint_index():
 
 
 def deinterleave_llr(llr: np.ndarray) -> np.ndarray:
-    """llr: (nsym, 1100, 4) in transmitted (interleaved) order -> (nsym, 4400) bit LLRs in coded-bit order."""
+    """llr: (nsym, 1100, 4) in transmitted (interleaved) order -> (nsym, 4400) bit LLRs in coded-bit order.
+    (nsym, 1100, 2) QPSK LLRs [I, Q]: plain permutation (no rotation) -> (nsym, 2200)."""
     m, odd = _deint_index()
     out = np.empty_like(llr)
+    qpsk = llr.shape[-1] == 2
     for s in range(llr.shape[0]):
         g = llr[s][m]
-        g[odd] = np.roll(g[odd], 1, axis=1)
+        if not qpsk:
+            g[odd] = np.roll(g[odd], 1, axis=1)
         out[s] = g
     return out.reshape(llr.shape[0], -1)
 
@@ -194,14 +240,15 @@ def rx_symbols(y_lts_full: np.ndarray, y_data_full: list, eq: str = "mmse", soft
 
 
 def decode_payload(llr_sym: np.ndarray, nsym: int, nbytes: int, iters: int = 20, alpha: float = 0.75,
-                   max_llr: float | None = None) -> dict:
-    """llr_sym: (nsym, 1100, 4). Returns payload bytes + LDPC statistics."""
-    deint = deinterleave_llr(llr_sym)                    # (nsym, 4400)
-    cw_llr = deint[:, :CODED_BITS].reshape(nsym * CW_PER_SYM, CODE_N)
+                   max_llr: float | None = None, mode: int = 1) -> dict:
+    """llr_sym: (nsym, 1100, 4) (mode 1) or (nsym, 1100, 2) (mode 0). Returns payload bytes + LDPC statistics."""
+    m = layout(mode)
+    deint = deinterleave_llr(llr_sym)                    # (nsym, 4400 | 2200)
+    cw_llr = deint[:, :m["cw"] * CODE_N].reshape(nsym * m["cw"], CODE_N)
     if max_llr is not None:
         cw_llr = np.clip(cw_llr, -max_llr, max_llr)
-    hard, used, ok = ldpc_ref.decode(cw_llr, iters=iters, alpha=alpha)
-    info = hard[:, :CODE_K].reshape(-1)
+    hard, used, ok = ldpc_ref.decode(cw_llr, iters=iters, alpha=alpha, base=mode_base(mode))
+    info = hard[:, :mode_k(mode)].reshape(-1)
     data = np.packbits(info)
     raw = scrambler_ref.scramble(list(data))             # additive scrambler: same operation descrambles
     return {"bytes": bytes(raw[:nbytes]), "iterations": used, "ok": ok, "hard_info": hard[:, :CODE_K]}

@@ -33,9 +33,13 @@ class RtlSimTxBackend(TxBackend):
 
     def get_iq(self) -> np.ndarray:
         words = []
-        for p in self.packets:
+        lay = refs.phy2_ref.layout(refs.phy_layout(self.cfg)) if refs.phy_code(self.cfg) == "ldpc" else None
+        mode_id = 1 if (lay is None or lay["id"] is None or lay["id"] == 1) else 0       # the RTL knows the two standard modes only
+        ids = getattr(self, "mode_ids", None)                       # optional per-packet MODE_ID list (mode switching scenarios)
+        for k, p in enumerate(self.packets):
+            m = mode_id if ids is None else int(ids[k])
             for i, b in enumerate(p):
-                words.append(f"{((1 if i == len(p) - 1 else 0) << 8) | b:03x}")
+                words.append(f"{(m << 9) | ((1 if i == len(p) - 1 else 0) << 8) | b:03x}")
         mem = "\n".join(words) + "\n"
         gen = {"CODED": 1 if refs.phy_code(self.cfg) == "ldpc" else 0, "NB": len(words), "NPKT": len(self.packets), "GAIN": int(self.cfg["tx"].get("gain", 16384)),
                "CLKS_PER_SAMPLE": self.CLKS_PER_SAMPLE,

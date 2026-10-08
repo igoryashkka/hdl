@@ -106,13 +106,13 @@ def run_experiment(cfg: dict, outdir: str | Path | None = None, plots: bool | No
     trace.record("channel_iq", iq_ch, sample_rate=refs.FS, source="channel")
     delay = float(truth.get("delay_samples", 0.0))
     starts_rx = [s + delay for s in starts_tx]
-    layout = golden.frame_layout(nsyms)
+    layout = golden.frame_layout(nsyms, refs.frame_syms(cfg))
     gt = {"packet_start": starts_rx, "lts_start": [s + layout["lts_start"] for s in starts_rx],
           "data_symbol_starts": [[s + d for d in layout["data_starts"]] for s in starts_rx],
           "cfo_hz": float(cfg["channel"].get("cfo_hz", 0.0)) if rx_iq_override is None else truth.get("cfo_hz", 0.0),
           "timing_offset": delay, "channel": {k: v for k, v in truth.items() if k not in ("fs",)},
           "tx_bits": [golden.tx_bits(p) for p in payloads]}
-    gt["tx_symbols"] = [golden.tx_data_symbols(p, refs.phy_code(cfg))[0] for p in payloads]
+    gt["tx_symbols"] = [golden.tx_data_symbols(p, refs.phy_code(cfg), refs.phy_layout(cfg))[0] for p in payloads]
 
     # 7-9: RX
     rx = make_rx(cfg["rx"]["backend"])
@@ -288,7 +288,7 @@ def compute_metrics(cfg, payloads, payload_rx, tx_dbg, rx_dbg, iq_tx, iq_ch, ch,
     perf.update(rx_dbg.get("perf", {}))
     perf.update(tx_dbg.get("perf", {}))
     if perf:
-        m["rtl_performance"] = performance.rtl_performance(perf, bytes_per_sym=refs.bytes_per_sym(cfg))
+        m["rtl_performance"] = performance.rtl_performance(perf, bytes_per_sym=refs.bytes_per_sym(cfg), pre=refs.frame_syms(cfg))
     if truth.get("adc"):
         m["adc"] = truth["adc"]
     return m

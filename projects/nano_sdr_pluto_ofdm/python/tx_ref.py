@@ -42,17 +42,24 @@ def tx_data_symbols(payload):
     return (iq[:, 0] + 1j * iq[:, 1]).reshape(nsym, NUM_DATA_SC), words
 
 
-def tx_frame(payload, gain=16384, mask=0x0FF, code="none"):
-    """Whole TX chain: bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top (code = "none" uncoded, 550 bytes per
-    symbol; "ldpc" LDPC R=5/6, 450 bytes per symbol, python/phy2_ref.tx_words)."""
-    import scrambler_ref, interleaver_ref, qam_ref, ofdm_ref
-    from phy_params import BYTES_PER_OFDM, NUM_DATA_SC, FFT_SIZE, CP_LEN
+def tx_frame(payload, gain=16384, mask=0x0FF, code="none", mode=1):
+    """Whole TX chain: bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top.
+    code "none": uncoded 16-QAM, 550 bytes per symbol, frame [sync][LTS][data...].
+    code "ldpc": dual-mode PHY, frame [sync][LTS][header][data...]; mode 1 = MAX RATE (16-QAM, LDPC 5/6, 450 bytes per symbol),
+    mode 0 = MAX RANGE (QPSK, LDPC 1/2, 135 bytes per symbol); the header symbol (QPSK, repetition coded) carries MODE_ID and nsyms."""
+    import scrambler_ref, interleaver_ref, qam_ref, ofdm_ref, hdr_ref
+    from phy_params import BYTES_PER_OFDM, NUM_DATA_SC, FFT_SIZE, CP_LEN, QPSK_UNIT
     n_log = FFT_SIZE.bit_length() - 1
+    hdr_syms = None
     if code == "ldpc":
         import phy2_ref
-        bps = phy2_ref.INFO_BYTES_PER_SYM
+        bps = phy2_ref.info_bytes_per_sym(mode)
+        lay = phy2_ref.layout(mode)
         nsym = -(-len(payload) // bps)
-        words = phy2_ref.tx_words(bytes(payload), nsym, "ldpc")
+        words = phy2_ref.tx_words(bytes(payload), nsym, "ldpc", mode)
+        lay = phy2_ref.layout(mode)
+        hb = hdr_ref.tx_bins(lay["id"] if lay["id"] is not None else (0 if lay["mod"] == "qpsk" else 1), nsym)
+        hdr_syms = hb[:, 0] + 1j * hb[:, 1]
     else:
         nsym = -(-len(payload) // BYTES_PER_OFDM)
         data = list(payload) + [0] * (nsym * BYTES_PER_OFDM - len(payload))
@@ -61,9 +68,16 @@ def tx_frame(payload, gain=16384, mask=0x0FF, code="none"):
         for b in sc:
             words += [b >> 4, b & 0xF]
         words = interleaver_ref.interleave(words, 4, 1)
-    bits = np.array([[(w >> (3 - k)) & 1 for k in range(4)] for w in words]).reshape(-1)
-    iq = qam_ref.map_symbols(bits, order=16)
+    if code == "ldpc" and lay["mod"] == "qpsk":
+        bits = np.array([[(w >> 1) & 1, w & 1] for w in words]).reshape(-1)
+        iq = qam_ref.map_symbols(bits, order=4, unit=QPSK_UNIT)
+    else:
+        bits = np.array([[(w >> (3 - k)) & 1 for k in range(4)] for w in words]).reshape(-1)
+        iq = qam_ref.map_symbols(bits, order=16)
     frames = [ofdm_ref.preamble(0), ofdm_ref.preamble(1)]
+    if hdr_syms is not None:
+        hiq = np.stack([hdr_syms.real, hdr_syms.imag], axis=1).astype(np.int64)
+        frames.append(ofdm_ref.insert_pilots(ofdm_ref.map_bins(hiq)))
     for s in range(nsym):
         frames.append(ofdm_ref.insert_pilots(ofdm_ref.map_bins(iq[s * NUM_DATA_SC:(s + 1) * NUM_DATA_SC])))
     out = []

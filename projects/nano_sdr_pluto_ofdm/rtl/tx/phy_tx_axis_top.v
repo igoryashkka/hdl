@@ -11,7 +11,8 @@
 // Inter-packet gap: the next packet is accepted only when the PHY is idle and `gap_samples` DAC samples have elapsed since
 //   it became idle (the receiver handles one packet at a time and needs ~12000 samples to re-arm).
 // Registers (base 0x7C440000 in the BD, generic part in rtl/common/phy_regs_axil.v):
-//   cfg 0x10 GAIN (Q2.14, 16384 = 1.0)   0x14 GAP_SAMPLES   0x18 ENABLE (bit0, packets are only accepted when 1)
+//   cfg 0x10 GAIN (Q2.14, 16384 = 1.0)   0x14 GAP_SAMPLES   0x18 ENABLE (bit0, packets are only accepted when 1) + MODE (bit1: 0 = MAX RANGE
+//   QPSK + LDPC 1/2, 1 = MAX RATE 16-QAM + LDPC 5/6; sampled with the first byte of a packet, change it only between packets)
 //   status snapshot words (write SNAP 0x08, poll bit0, read 0x80 + 4*i):
 //     0 {pkt_done, pkt_accepted}   1 {trunc, overflow}   2 {bad_header, underflow}   3 dac samples   4 clk count
 //     5 busy clocks   6 active (non-idle) dac samples   7 {peak|q|, peak|i|} of the output   8 dma beats   9 dma stall clocks
@@ -23,6 +24,7 @@ module phy_tx_axis_top #(
   parameter [15:0] GAIN    = 16'd16384,
   parameter [31:0] GAP     = 32'd16384,
   parameter        ENABLE  = 1'b1,
+  parameter        MODE    = 1'b1,            // reset value of the PHY mode (1 = MAX RATE, 0 = MAX RANGE)
   parameter        CODED   = 1'b1             // LDPC R=5/6 (450 payload bytes per OFDM symbol, Zynq-7020 design); 0 = uncoded (550)
 ) (
   (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF PHY_STREAM" *)   /* keeps l_clk away from the AXI-Lite port (ad_cpu_interconnect picks the S_AXI clock by ASSOCIATED_BUSIF) */
@@ -71,6 +73,7 @@ module phy_tx_axis_top #(
   wire [15:0]        gain_w   = cfg[15:0];
   wire [31:0]        gap_w    = cfg[63:32];
   wire               enable_w = cfg[64];
+  wire               mode_w   = cfg[65];
 
   reg rst_r = 1'b1;                       // local reset copy (AD9361 reset has a large fanout) + PS soft reset
   always @(posedge clk) rst_r <= rst | soft_rst;
@@ -128,7 +131,7 @@ module phy_tx_axis_top #(
   wire        iq_valid, underflow, overflow, trunc;
 
   phy_tx_top #(.CODED(CODED)) u_phy (
-    .clk(clk), .rst(rst_r), .gain(gain_w),
+    .clk(clk), .rst(rst_r), .gain(gain_w), .cfg_mode(mode_w),
     .s_valid(byte_valid), .s_ready(phy_ready), .s_data(word[7:0]), .s_last(last_byte),
     .iq_pull(dac_valid), .iq_re(iq_re), .iq_im(iq_im), .iq_valid(iq_valid),
     .underflow(underflow), .overflow(overflow), .pkt_trunc(trunc), .pkt_done(pkt_done),
@@ -195,12 +198,12 @@ module phy_tx_axis_top #(
   assign sw[15] = n_dropped;
   genvar gi;
   generate for (gi = 16; gi < 31; gi = gi + 1) begin : g_rsv assign sw[gi] = 32'd0; end endgenerate
-  assign sw[31] = {31'd0, CODED};
+  assign sw[31] = {30'd0, mode_w, CODED};
   generate for (gi = 0; gi < NST; gi = gi + 1) begin : g_stat assign stat[32*gi +: 32] = sw[gi]; end endgenerate
 
   phy_regs_axil #(
     .ID(32'h4F465458), .NCFG(NCFG), .NST(NST),
-    .CFG_INIT({{31'd0, ENABLE}, GAP, 16'd0, GAIN})
+    .CFG_INIT({{30'd0, MODE, ENABLE}, GAP, 16'd0, GAIN})
   ) u_regs (
     .s_axi_aclk(s_axi_aclk), .s_axi_aresetn(s_axi_aresetn),
     .s_axi_awaddr(s_axi_awaddr), .s_axi_awvalid(s_axi_awvalid), .s_axi_awready(s_axi_awready),

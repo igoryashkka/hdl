@@ -5,7 +5,8 @@
 //
 // Packet record format: see rtl/rx/phy_rx_pkt_out.sv (3 header beats + payload, tlast on the last beat).
 // Register map (base address in the BD, 0x7C440000): see rtl/common/phy_regs_axil.v for the generic part.
-//   cfg 0x10 NSYMS(8)  0x14 RMIN(32)  0x18 GAIN_SH(4, signed)  0x1C MMSE(1)  0x20 MAX_ITER(5)  0x24 BAD_THR(13, signed)  0x28 FT_EN(1)  0x2C TAU_TGT(8)
+//   cfg 0x10 NSYMS(8, data symbols)  0x14 RMIN(32)  0x18 GAIN_SH(4, signed)  0x1C MMSE(bit0) HDR_EN(bit1: mode from the header symbol) MODE(bit2: manual / fallback
+//   mode, 0 = MAX RANGE QPSK + LDPC 1/2, 1 = MAX RATE 16-QAM + LDPC 5/6)  0x20 MAX_ITER(5)  0x24 BAD_THR(13, signed)  0x28 FT_EN(bit0) SMOOTH(bit1: smoothing of the channel estimate)  0x2C TAU_TGT(8)
 //   (reset values = the module parameters)
 //   status snapshot words (write SNAP 0x08, poll bit0, read 0x80 + 4*i):
 //     0 {pkt_count[15:0], det_count[15:0]}   1 {wd_count[15:0], drop_count[15:0]}   2 {.., busy, flags[7:0]}
@@ -25,8 +26,11 @@ module phy_rx_axis_top #(
   parameter [3:0]  GAIN_SH = 4'd0,
   parameter        CODED   = 1'b1,          // LDPC + MMSE / soft LLR back-end (Zynq-7020 design); 0 = uncoded hard decision
   parameter        MMSE    = 1'b1,
+  parameter        HDR_EN  = 1'b1,          // take the PHY mode from the header symbol
+  parameter        MODE    = 1'b1,          // manual mode / fallback when the header CRC fails
   parameter [4:0]  MAX_ITER = 5'd10,
   parameter [12:0] BAD_THR = 13'd106,       // bad-subcarrier threshold, SNR code (log2 * 32): 106 = 10 dB
+  parameter        SMOOTH  = 1'b1,          // LTS channel estimate smoothing (3 bins, ~2 dB at low SNR)
   parameter        FT_EN   = 1'b1,          // fine timing loop (window re-centering from the LTS)
   parameter [7:0]  TAU_TGT = 8'd56          // wanted LTS window earliness [samples]
 ) (
@@ -78,17 +82,18 @@ module phy_rx_axis_top #(
   wire [15:0] st_det, st_pkt, st_drop, st_wd; wire [7:0] st_flags; wire st_busy;
   wire [15:0] st_rssi, st_angle, st_seq; wire [31:0] st_evm, st_cfo, st_nbest; wire st_pulse;
 
-  wire signed [19:0] st_tau_q8; wire signed [7:0] st_w0_adj;
+  wire signed [19:0] st_tau_q8; wire signed [7:0] st_w0_adj; wire st_mode, st_hdr_ok, st_hdr_mism; wire [13:0] st_hdr_conf;
   wire [15:0] st_snr_avg, st_snr_min, st_bad, st_noise, st_cw_count, st_cwfail_count; wire [7:0] st_ldpc_fail; wire [4:0] st_ldpc_imax; wire [11:0] st_ldpc_isum;
   phy_rx_top #(.CODED(CODED)) u_phy (
     .clk(clk), .rst(rst_r), .cfg_nsyms(cfg[7:0]), .cfg_rmin(cfg[63:32]), .cfg_gain_sh(cfg[67:64]),
-    .cfg_mmse(cfg[96]), .cfg_max_iter(cfg[132:128]), .cfg_bad_thr(cfg[172:160]), .cfg_ft_en(cfg[192]), .cfg_tau_tgt(cfg[231:224]),
+    .cfg_mmse(cfg[96]), .cfg_hdr_en(cfg[97]), .cfg_mode(cfg[98]), .cfg_max_iter(cfg[132:128]), .cfg_bad_thr(cfg[172:160]), .cfg_ft_en(cfg[192]), .cfg_smooth(cfg[193]), .cfg_tau_tgt(cfg[231:224]),
     .in_valid(in_valid), .in_i(i_in), .in_q(q_in),
     .m_axis_valid(m_axis_valid), .m_axis_ready(m_axis_ready), .m_axis_data(m_axis_data), .m_axis_last(m_axis_last),
     .st_det_count(st_det), .st_pkt_count(st_pkt), .st_drop_count(st_drop), .st_wd_count(st_wd), .st_flags(st_flags), .st_busy(st_busy),
     .st_rssi(st_rssi), .st_evm(st_evm), .st_cfo_inc(st_cfo), .st_nbest(st_nbest), .st_angle(st_angle), .st_seq(st_seq), .st_pkt_pulse(st_pulse),
     .st_snr_avg(st_snr_avg), .st_snr_min(st_snr_min), .st_bad(st_bad), .st_noise(st_noise), .st_ldpc_fail(st_ldpc_fail), .st_ldpc_imax(st_ldpc_imax),
-    .st_ldpc_isum(st_ldpc_isum), .st_cw_count(st_cw_count), .st_cwfail_count(st_cwfail_count), .st_tau_q8(st_tau_q8), .st_w0_adj(st_w0_adj)
+    .st_ldpc_isum(st_ldpc_isum), .st_cw_count(st_cw_count), .st_cwfail_count(st_cwfail_count), .st_tau_q8(st_tau_q8), .st_w0_adj(st_w0_adj),
+    .st_mode(st_mode), .st_hdr_ok(st_hdr_ok), .st_hdr_mism(st_hdr_mism), .st_hdr_conf(st_hdr_conf)
   );
 
   // ---------------------------------------------------------------- logging counters (phy_clk domain, cleared by `clr`)
@@ -143,12 +148,12 @@ module phy_rx_axis_top #(
   genvar gi;
   assign sw[20] = {st_w0_adj, 4'd0, st_tau_q8};          // fine timing: window correction [samples], tau (1/256 sample)
   generate for (gi = 21; gi < 31; gi = gi + 1) begin : g_rsv assign sw[gi] = 32'd0; end endgenerate
-  assign sw[31] = {30'd0, MMSE, CODED};
+  assign sw[31] = {13'd0, st_hdr_conf, st_hdr_mism, st_hdr_ok, st_mode, MMSE, CODED} ;
   generate for (gi = 0; gi < NST; gi = gi + 1) begin : g_stat assign stat[32*gi +: 32] = sw[gi]; end endgenerate
 
   phy_regs_axil #(
     .ID(32'h4F465258), .NCFG(NCFG), .NST(NST),
-    .CFG_INIT({{24'd0, TAU_TGT}, {31'd0, FT_EN}, {19'd0, BAD_THR}, {27'd0, MAX_ITER}, {31'd0, MMSE}, {28'd0, GAIN_SH}, RMIN, {24'd0, NSYMS}})
+    .CFG_INIT({{24'd0, TAU_TGT}, {30'd0, SMOOTH, FT_EN}, {19'd0, BAD_THR}, {27'd0, MAX_ITER}, {29'd0, MODE, HDR_EN, MMSE}, {28'd0, GAIN_SH}, RMIN, {24'd0, NSYMS}})
   ) u_regs (
     .s_axi_aclk(s_axi_aclk), .s_axi_aresetn(s_axi_aresetn),
     .s_axi_awaddr(s_axi_awaddr), .s_axi_awvalid(s_axi_awvalid), .s_axi_awready(s_axi_awready),

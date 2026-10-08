@@ -41,8 +41,8 @@ class RtlSimRxBackend(RxBackend):
         mem = "\n".join(f"{(a << 16) | b:08x}" for a, b in zip(i, q)) + "\n"
         rxc = self.cfg["rx"]
         debug = 1 if self.cfg.get("rtl", {}).get("debug", True) else 0
-        ph = self.cfg.get("phy", {})
-        gen = {"CODED": 1 if refs.phy_code(self.cfg) == "ldpc" else 0, "MMSE": 1 if ph.get("eq", "mmse") == "mmse" else 0, "MAX_ITER": int(ph.get("max_iter", 10)),
+        ph = refs.phy_opts(self.cfg)
+        gen = {"CODED": 1 if refs.phy_code(self.cfg) == "ldpc" else 0, "MMSE": 1 if ph.get("eq", "mmse") == "mmse" else 0, "HDR_EN": 1 if ph.get("hdr_en", True) else 0, "SMOOTH": 1 if int(ph.get("chest_smooth", 0)) > 0 else 0, "MODE_FB": 1 if ph.get("fallback_mode", 1) else 0, "MAX_ITER": int(ph.get("max_iter", 10)),
                "FT_EN": 1 if ph.get("fine_timing", True) else 0, "TAU_TGT": int(ph.get("tau_target", 56)), "NS": len(iq), "NSYMS": self.nsyms, "RMIN": int(rxc.get("rmin", 262144)), "GAIN_SH": int(rxc.get("gain_sh", 0)),
                "CLKS_PER_SAMPLE": self.CLKS_PER_SAMPLE, "DEBUG": debug}
         sim = Simulator(self.cfg)
@@ -82,6 +82,8 @@ class RtlSimRxBackend(RxBackend):
                 pkts.append(cur); cur = []
         self.debug["events"], self.debug["packets"] = [], []
         nsyms = self.nsyms
+        coded = refs.phy_code(self.cfg) == "ldpc"
+        qblock = (nsyms + (1 if coded else 0)) * refs.P.NUM_DATA_SC            # Q lines per packet: [header symbol] + data symbols
         q_all = np.array(q_re, float) + 1j * np.array(q_im, float)
         for k, ev in enumerate(events):
             inc = incs[k] if k < len(incs) else 0
@@ -106,12 +108,16 @@ class RtlSimRxBackend(RxBackend):
                 sg = lambda v, w: v - (1 << w) if v >= (1 << (w - 1)) else v
                 b3, b4, b5 = p[3], p[4], p[5]
                 k_ = 3.0103 / 32
+                hb = (b4 >> 20) & 0xF                               # {header nsyms mismatch, header CRC ok, MODE_ID, dual-mode}
+                mode_id = (hb >> 1) & 1
+                ncw = nsyms * (2 if mode_id else 1)
                 pk.update({"snr_avg_db": sg((b3 >> 48) & 0xFFFF, 16) * k_, "snr_min_db": sg((b3 >> 32) & 0xFFFF, 16) * k_,
                            "bad_subcarriers": (b3 >> 16) & 0xFFFF, "noise_code": sg(b3 & 0xFFFF, 16),
-                           "ldpc_failures": (b4 >> 56) & 0xFF, "ldpc_iterations": [((b4 >> 32) & 0xFFF) / (2 * nsyms)] * (2 * nsyms), "ldpc_iter_max": (b4 >> 48) & 0x1F,
-                           "ldpc_codewords": 2 * nsyms, "tau_q8": sg(b4 & 0xFFFFF, 20), "angle_first": (b5 >> 32) & 0xFFFFFFFF,
-                           "sfo_slope_last": sg(b5 & 0xFFFFFFFF, 32)})
-            sl = slice(k * nsyms * refs.P.NUM_DATA_SC, (k + 1) * nsyms * refs.P.NUM_DATA_SC)
+                           "ldpc_failures": (b4 >> 56) & 0xFF, "ldpc_iterations": [((b4 >> 32) & 0xFFF) / ncw] * ncw, "ldpc_iter_max": (b4 >> 48) & 0x1F,
+                           "ldpc_codewords": ncw, "tau_q8": sg(b4 & 0xFFFFF, 20), "angle_first": (b5 >> 32) & 0xFFFFFFFF,
+                           "sfo_slope_last": sg(b5 & 0xFFFFFFFF, 32), "mode_used": mode_id, "hdr_ok": bool((hb >> 2) & 1),
+                           "hdr_nsyms_mismatch": bool((hb >> 3) & 1), "hdr": {"ok": bool((hb >> 2) & 1), "mode": mode_id}})
+            sl = slice(k * qblock + (refs.P.NUM_DATA_SC if coded else 0), (k + 1) * qblock)
             if len(q_all) >= sl.stop:
                 pk["eq"] = q_all[sl].reshape(nsyms, refs.P.NUM_DATA_SC)
             ang = (p[2] >> 32) & 0xFFFFFFFF
@@ -131,7 +137,7 @@ class RtlSimRxBackend(RxBackend):
             self.debug["packets"].append(pk)
             # packet latency: first output beat vs the clock at which the last data window sample was fed
             if k < len(events):
-                end_idx = events[k]["n_best"] + refs.LTS_WINDOW_OFFSET + nsyms * refs.SYM_LEN + refs.N_FFT
+                end_idx = events[k]["n_best"] + refs.LTS_WINDOW_OFFSET + (nsyms + (1 if coded else 0)) * refs.SYM_LEN + refs.N_FFT
                 last_clk = meta["t0"] + end_idx * meta["cps"]
                 perf.setdefault("rx_first_beat_clk", first_clk[k]); perf.setdefault("rx_last_sample_clk", last_clk)
         self.debug["perf"] = perf

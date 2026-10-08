@@ -1,6 +1,7 @@
-// Module : phy_ldpc_dec   QC-LDPC layered normalised min-sum decoder (R = 5/6, N = 2160, Z = 60, 6 layers), Z-parallel.
+// Module : phy_ldpc_dec   QC-LDPC layered normalised min-sum decoder, Z-parallel, two codes on one datapath (cfg_cs):
+//   cfg_cs = 0: R = 1/2 (K = 1080, 18 layers, MAX RANGE)   cfg_cs = 1: R = 5/6 (K = 1800, 6 layers, MAX RATE)   N = 2160, Z = 60.
 //   Input  : 4 channel LLRs per cycle (6 bit signed, positive = bit 0), 540 words per codeword (natural order, element n = 4*w + j).
-//   Output : the 1800 information bits as 225 bytes (MSB first = lowest bit index), one codeword at a time, status (iterations
+//   Output : the information bits as 135 (R = 1/2) or 225 (R = 5/6) bytes (MSB first = lowest bit index), one codeword at a time, status (iterations
 //            used, converged flag) valid with the last byte (st_valid).
 // Architecture (python/ldpc_fixed_ref.py is the bit-exact golden model):
 //   * two banks of 60 x 36 x 8 bit posterior memory (distributed RAM, one 8 bit RAM per circulant element): one bank loads the next
@@ -9,7 +10,7 @@
 //     6-stage barrel rotator per read, no inverse rotation, the rotation deltas are constants in the package;
 //   * per layer: pass 1 reads the entries (read, rotate, R_old / Q, min-sum accumulation), pass 2 writes L = Q + R_new back; the
 //     check-node state of the 6 layers circulates in a shift ring;
-//   * early termination after 6 consecutive clean layers (no unsatisfied parity among the read signs and no sign changed on write).
+//   * early termination after one full clean iteration (6 / 18 consecutive clean layers) (no unsatisfied parity among the read signs and no sign changed on write).
 // Cost: ~(2*deg + 8) cycles per layer, ~260 cycles per iteration.
 module phy_ldpc_dec
   import phy_ldpc_pkg::*;
@@ -20,6 +21,7 @@ module phy_ldpc_dec
   input  logic              clk,
   input  logic              rst,
   input  logic [4:0]        cfg_max_iter,
+  input  logic              cfg_cs,            // code select, static while a packet is in flight
   input  logic              in_valid,
   output logic              in_ready,
   input  logic signed [5:0] in_llr [4],
@@ -63,7 +65,7 @@ module phy_ldpc_dec
   logic [5:0]  ld_col;
   logic [5:0]  ld_r0;                             // element index of j = 0 inside the column (multiple of 4)
   wire         ld_fire = in_valid && in_ready;
-  wire  [5:0]  ld_off  = lcoloff(int'(ld_col));
+  wire  [5:0]  ld_off  = lcoloff(int'(cfg_cs), int'(ld_col));
   logic [5:0]  ld_p [4];
   always_comb begin
     for (int j = 0; j < 4; j++) begin
@@ -142,14 +144,16 @@ module phy_ldpc_dec
 
   typedef enum logic [2:0] {D_IDLE, D_P1, D_P1D, D_P2, D_P2D, D_END} dst_t;
   dst_t        dst;
-  logic [2:0]  layer;
+  logic [4:0]  layer;
   logic [4:0]  e_cnt, e2_cnt;
   logic [4:0]  iter_cnt;
-  logic [2:0]  clean_cnt;
+  logic [4:0]  clean_cnt;
   logic        first_iter;
   logic [2:0]  drain;
   logic        unsat_any, flip_any;
-  wire  [4:0]  deg_l = 5'(ldeg(int'(layer)));
+  wire  [4:0]  deg_l = 5'(ldeg(int'(cfg_cs), int'(layer)));
+  wire  [4:0]  lmb_c = 5'(lmb(int'(cfg_cs)));          // layers of the selected code
+  wire  [4:0]  lkb_c = 5'(lkb(int'(cfg_cs)));          // information block columns of the selected code
 
   // rotation: out[p] = in[(p + sh) % Z] when enabled
   function automatic lv_t rot_stage(input lv_t x, input int sh, input logic en);
@@ -185,18 +189,22 @@ module phy_ldpc_dec
     rotB = rot_stage(rotB, 16, s2_dl[4]);
     rotB = rot_stage(rotB, 32, s2_dl[5]);
     for (int r = 0; r < Z; r++) begin
-      logic [MW-1:0] mg, sc;
-      mg = (rg_idx[0][r] == s2_k) ? rg_m2[0][r] : rg_m1[0][r];
+      logic [MW-1:0] mg, sc, m1x, m2x; logic [4:0] ix; logic px; logic [LDMAX-1:0] sx;
+      // the record of the layer processed next sits at ring index LMB - lmb (0 for the 18-layer code, LMB - 6 for the 6-layer code):
+      // a new record enters at LMB-1 and moves down one index per layer, a 2:1 read mux instead of a write mux in front of every ring flip-flop
+      if (cfg_cs) begin m1x = rg_m1[LMB-6][r]; m2x = rg_m2[LMB-6][r]; ix = rg_idx[LMB-6][r]; px = rg_par[LMB-6][r]; sx = rg_sg[LMB-6][r]; end
+      else        begin m1x = rg_m1[0][r];     m2x = rg_m2[0][r];     ix = rg_idx[0][r];     px = rg_par[0][r];     sx = rg_sg[0][r];     end
+      mg = (ix == s2_k) ? m2x : m1x;
       sc = mg - (mg >> 2);
       if (first_iter) rold[r] = '0;
-      else rold[r] = (rg_par[0][r] ^ rg_sg[0][r][s2_k]) ? -LW'($signed({1'b0, sc})) : LW'($signed({1'b0, sc}));
+      else rold[r] = (px ^ sx[s2_k]) ? -LW'($signed({1'b0, sc})) : LW'($signed({1'b0, sc}));
     end
   end
 
   always_ff @(posedge clk) begin
     s0_v <= issue1; s0_k <= e_cnt;
-    s0_col <= lcol(int'(layer), int'(e_cnt));
-    s0_dl  <= ldelta(int'(layer), int'(e_cnt));
+    s0_col <= lcol(int'(cfg_cs), int'(layer), int'(e_cnt));
+    s0_dl  <= ldelta(int'(cfg_cs), int'(layer), int'(e_cnt));
     s1_v <= s0_v; s1_k <= s0_k; s1_dl <= s0_dl; s1_d <= rdsel;
     s2_v <= s1_v; s2_k <= s1_k; s2_dl <= s1_dl; s2_d <= rotA;
     s3_v <= s2_v; s3_k <= s2_k; s3_d <= rotB; s3_r <= rold;
@@ -270,8 +278,8 @@ module phy_ldpc_dec
       if (d > LMAX) a2_l[r] <= LW'(LMAX); else if (d < -LMAX) a2_l[r] <= LW'(-LMAX); else a2_l[r] <= d[LW-1:0];
     end
     w_l <= a2_l;
-    w_colr <= lcol(int'(layer), int'(a2_k));
-    w_shr  <= lshift(int'(layer), int'(a2_k));
+    w_colr <= lcol(int'(cfg_cs), int'(layer), int'(a2_k));
+    w_shr  <= lshift(int'(cfg_cs), int'(layer), int'(a2_k));
   end
   assign dw_en   = w_v;
   assign dw_col  = w_colr;
@@ -306,18 +314,18 @@ module phy_ldpc_dec
           if (drain == 3'd0) dst <= D_END; else drain <= drain - 1'b1;
         end
         D_END: begin
-          logic clean; logic [2:0] cn;
+          logic clean; logic [4:0] cn;
           clean = !unsat_any && !flip_any;
-          cn = clean ? ((clean_cnt == 3'd7) ? 3'd7 : clean_cnt + 3'd1) : 3'd0;
+          cn = clean ? ((clean_cnt == 5'd31) ? 5'd31 : clean_cnt + 5'd1) : 5'd0;
           clean_cnt <= cn;
           unsat_any <= 1'b0; flip_any <= 1'b0;
-          if (cn >= 3'd6 || (layer == 3'(LMB - 1) && iter_cnt == cfg_max_iter)) begin
+          if (cn >= lmb_c || (layer == lmb_c - 5'd1 && iter_cnt == cfg_max_iter)) begin
             dst <= D_IDLE; dec_busy <= 1'b0; dcd[dec_sel] <= 1'b1;
-            res_iter[dec_sel] <= iter_cnt; res_ok[dec_sel] <= (cn >= 3'd6);
+            res_iter[dec_sel] <= iter_cnt; res_ok[dec_sel] <= (cn >= lmb_c);
             dec_sel <= ~dec_sel;
           end else begin
             e_cnt <= '0;
-            if (layer == 3'(LMB - 1)) begin layer <= '0; iter_cnt <= iter_cnt + 1'b1; first_iter <= 1'b0; end
+            if (layer == lmb_c - 5'd1) begin layer <= '0; iter_cnt <= iter_cnt + 1'b1; first_iter <= 1'b0; end
             else layer <= layer + 1'b1;
             dst <= D_P1;
           end
@@ -342,7 +350,7 @@ module phy_ldpc_dec
   logic [5:0] coff [2][LNB];
   always_ff @(posedge clk) begin
     if (dst == D_IDLE && occ[dec_sel] && !dcd[dec_sel])
-      for (int c = 0; c < LNB; c++) coff[dec_sel][c] <= lcoloff(c);
+      for (int c = 0; c < LNB; c++) coff[dec_sel][c] <= lcoloff(int'(cfg_cs), c);
     if (dw_en) coff[dec_sel][dw_col] <= w_shr;
   end
 
@@ -395,7 +403,7 @@ module phy_ldpc_dec
           out_data  <= cat[119 - 8 * int'(o_byte) -: 8];
           out_first <= o_first; o_first <= 1'b0;
           if (o_byte == 4'd14) begin
-            if (o_pair == 5'd14) begin
+            if (o_pair == (lkb_c >> 1) - 5'd1) begin
               out_last <= 1'b1; st_valid <= 1'b1; out_done_p <= 1'b1; out_done_b <= out_sel; ost <= O_IDLE;
               st_ok <= res_ok[out_sel]; st_iter <= res_iter[out_sel]; out_sel <= ~out_sel;
             end else begin

@@ -3,9 +3,11 @@
 // DAC modelled as a sample strobe every 2nd clock (processing clock = 2 x sample rate, like l_clk = 61.44 MHz for 30.72 MSPS).
 // Checks: bit-exact samples, continuity inside a packet (no pull without data once a packet started to play),
 // no overflow, pkt_done pulses (2), s_ready low while a packet is buffered, idle output is zero.
-module tb_phy_tx_top #(parameter int CODED = 0);
-  localparam int SYM = 2192, NA = 4 * SYM, NB = 4 * SYM;
-  localparam int P0N = CODED ? 900 : 1100, P1N = CODED ? 500 : 700;     // coded: 450 payload bytes per OFDM symbol
+// CODED = 1: dual-mode frame [sync][LTS][header][2 data symbols]; MODE = 1 MAX RATE (16-QAM, LDPC 5/6, 900 / 500 byte packets),
+// MODE = 0 MAX RANGE (QPSK, LDPC 1/2, 270 / 200 byte packets).
+module tb_phy_tx_top #(parameter int CODED = 0, parameter int MODE = 1);
+  localparam int SYM = 2192, NA = (CODED ? 5 : 4) * SYM, NB = (CODED ? 5 : 4) * SYM;
+  localparam int P0N = CODED ? (MODE ? 900 : 270) : 1100, P1N = CODED ? (MODE ? 500 : 200) : 700;     // coded: 450 / 135 payload bytes per OFDM symbol
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
 
@@ -14,10 +16,11 @@ module tb_phy_tx_top #(parameter int CODED = 0);
   logic [31:0] exp0 [NA];
   logic [31:0] exp1 [NB];
   logic [15:0] gain = 16'd16384;
+  logic cfg_mode = MODE[0];
   logic s_valid = 0, s_ready, s_last = 0; logic [7:0] s_data = 0;
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
-  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
+  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .cfg_mode, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
                   .underflow, .overflow, .pkt_trunc, .pkt_done, .busy);
 
   int errors = 0, nout = 0, npd = 0, gap_errs = 0;
@@ -68,8 +71,8 @@ module tb_phy_tx_top #(parameter int CODED = 0);
   initial begin
     string f;
     if (CODED) begin
-      $readmemh("vec/txc_pkt0_in.mem", pkt0); $readmemh("vec/txc_pkt1_in.mem", pkt1);
-      $readmemh("vec/txc_pkt0_exp.mem", exp0); $readmemh("vec/txc_pkt1_exp.mem", exp1);
+      $readmemh(MODE ? "vec/txc_pkt0_in.mem" : "vec/txq_pkt0_in.mem", pkt0); $readmemh(MODE ? "vec/txc_pkt1_in.mem" : "vec/txq_pkt1_in.mem", pkt1);
+      $readmemh(MODE ? "vec/txc_pkt0_exp.mem" : "vec/txq_pkt0_exp.mem", exp0); $readmemh(MODE ? "vec/txc_pkt1_exp.mem" : "vec/txq_pkt1_exp.mem", exp1);
     end else begin
       $readmemh("vec/txt_pkt0_in.mem", pkt0); $readmemh("vec/txt_pkt1_in.mem", pkt1);
       $readmemh("vec/txt_pkt0_exp.mem", exp0); $readmemh("vec/txt_pkt1_exp.mem", exp1);
@@ -88,7 +91,7 @@ module tb_phy_tx_top #(parameter int CODED = 0);
     if (nout !== NA + NB) begin errors++; $display("samples %0d != %0d", nout, NA + NB); end
     if (npd !== 2) begin errors++; $display("pkt_done pulses %0d != 2", npd); end
     if (gap_errs != 0) errors += gap_errs;
-    if (errors == 0) $display("TEST PASSED tb_phy_tx_top CODED=%0d (%0d samples bit-exact)", CODED, nout);
+    if (errors == 0) $display("TEST PASSED tb_phy_tx_top CODED=%0d MODE=%0d (%0d samples bit-exact)", CODED, MODE, nout);
     else $display("TEST FAILED tb_phy_tx_top errors=%0d", errors);
     $finish;
   end

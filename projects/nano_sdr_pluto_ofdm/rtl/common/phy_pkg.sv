@@ -45,6 +45,10 @@ package phy_pkg;
 
   // ---- known sequences (x^15+x^14+1 LFSR seeds) ----
   localparam logic [14:0] PILOT_SEED = 15'h7FFF;
+  // ---- dual mode PHY: MODE_ID 0 = MAX RANGE (QPSK, LDPC 1/2), 1 = MAX RATE (16-QAM, LDPC 5/6); one repetition-coded QPSK header symbol after the LTS ----
+  localparam int QPSK_UNIT        = 9216;                       // QPSK axis level = 2.25 * QAM_UNIT (same mean power as 16-QAM: 2 * 9216^2 = 10 * 4096^2 * 1.0125)
+  localparam int HDR_AMP          = QPSK_UNIT;
+  localparam logic [14:0] HDR_SEED = 15'h1B2D;
   localparam logic [14:0] SYNC_SEED  = 15'h1ACE;
   localparam logic [14:0] LTS_SEED   = 15'h2B5D;
 

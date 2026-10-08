@@ -29,7 +29,8 @@ class PythonTxBackend(TxBackend):
     def get_iq(self) -> np.ndarray:
         parts, self._starts, pos = [], [], 0
         for k, p in enumerate(self.packets):
-            iq = refs.tx_ref.tx_frame(list(p), gain=self.gain, code=self.code)
+            ids = getattr(self, "mode_ids", None)
+            iq = refs.tx_ref.tx_frame(list(p), gain=self.gain, code=self.code, mode=refs.phy_layout(self.cfg) if ids is None else int(ids[k]))
             frame = np.array([complex(a, b) for a, b in iq])
             self._starts.append(pos)
             parts.append(frame)
@@ -44,7 +45,7 @@ class PythonTxBackend(TxBackend):
 
     def _frame_len(self, p: bytes) -> int:
         nsym = -(-len(p) // refs.bytes_per_sym(self.cfg))
-        return (nsym + 2) * refs.SYM_LEN
+        return (nsym + refs.frame_syms(self.cfg)) * refs.SYM_LEN
 
     def reset(self) -> None:
         self.packets, self._starts = [], []

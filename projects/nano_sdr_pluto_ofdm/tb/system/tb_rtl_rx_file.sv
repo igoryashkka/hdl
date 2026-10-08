@@ -7,11 +7,12 @@
 //     Q <re> <im>                 equalised / derotated data bins (DEBUG=1)
 //     W <s> <hex40>               channel weights of the packet (DEBUG=1)
 //     S <det> <pkt> <drop> <wd> <flags> <total_clks> <codewords> <codewords_failed>
-// Generics: CODED, MMSE, MAX_ITER, FT_EN, TAU_TGT, NS, NSYMS, RMIN, GAIN_SH, CLKS_PER_SAMPLE (2 = l_clk 61.44 MHz for 30.72 MS/s), IDLE_LIMIT, DEBUG.
+// Generics: CODED, MMSE, MAX_ITER, FT_EN, TAU_TGT, HDR_EN (mode from the header symbol), MODE_FB (manual / fallback mode), NS, NSYMS (data symbols), RMIN,
+// GAIN_SH, CLKS_PER_SAMPLE (2 = l_clk 61.44 MHz for 30.72 MS/s), IDLE_LIMIT, DEBUG. Coded packets are logged with the header symbol first (Q lines).
 module tb_rtl_rx_file #(
   parameter int NS = 1000, parameter int NSYMS = 2, parameter int RMIN = 262144, parameter int GAIN_SH = 0,
   parameter int CLKS_PER_SAMPLE = 2, parameter int IDLE_LIMIT = 60000, parameter int DEBUG = 1,
-  parameter bit CODED = 1'b0, parameter bit MMSE = 1'b1, parameter int MAX_ITER = 10, parameter bit FT_EN = 1'b1, parameter int TAU_TGT = 56
+  parameter bit CODED = 1'b0, parameter bit HDR_EN = 1'b1, parameter bit SMOOTH = 1'b1, parameter bit MODE_FB = 1'b1, parameter bit MMSE = 1'b1, parameter int MAX_ITER = 10, parameter bit FT_EN = 1'b1, parameter int TAU_TGT = 56
 );
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
@@ -22,6 +23,8 @@ module tb_rtl_rx_file #(
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   logic [15:0] st_det_count, st_pkt_count, st_drop_count, st_wd_count; logic [7:0] st_flags; logic st_busy;
+  logic cfg_smooth = SMOOTH;
+  logic cfg_hdr_en = HDR_EN, cfg_mode = MODE_FB; logic st_mode, st_hdr_ok, st_hdr_mism; logic [13:0] st_hdr_conf;
   logic cfg_mmse = MMSE; logic [4:0] cfg_max_iter = MAX_ITER; logic signed [12:0] cfg_bad_thr = 106; logic cfg_ft_en = FT_EN; logic [7:0] cfg_tau_tgt = TAU_TGT;
   logic signed [19:0] st_tau_q8; logic signed [7:0] st_w0_adj;
   logic [15:0] st_snr_avg, st_snr_min, st_bad, st_noise, st_cw_count, st_cwfail_count; logic [7:0] st_ldpc_fail; logic [4:0] st_ldpc_imax; logic [11:0] st_ldpc_isum;
