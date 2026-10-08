@@ -1,6 +1,8 @@
 # nano_sdr_pluto_ofdm — Long-Range Video PHY (OFDM, 16-QAM, LDPC)
 
-Гілка `OFDM_PHY`. ТЗ: `../nano_sdr_pluto/TestTask.md`, правила розробки: `../nano_sdr_pluto/CLAUDE.md`.
+> **Гілка `OFDM_PHY_Z7020`: Design not targeted for Zynq-7010.** Нова платформа Zynq-7020 (xc7z020clg400-1), сумісність із Z7010 не зберігається. ТЗ: `../nano_sdr_pluto/TestTask_7020.md` (LDPC R=5/6 + soft LLR, MMSE, fine timing + CFO/SFO tracking, SNR-estimator; simulation-first).
+
+Гілка `OFDM_PHY` (Z7010, uncoded) лишається як "Current PHY" для порівняння. ТЗ: `../nano_sdr_pluto/TestTask.md`, правила розробки: `../nano_sdr_pluto/CLAUDE.md`.
 ## Структура: спільне ядро + два білди
 ```
 nano_sdr_pluto_ofdm/      спільне: rtl/ tb/ python/ sim/ (цей каталог, не Vivado-проєкт)
@@ -97,3 +99,14 @@ RX-білд: у `axi_ad9361` вимкнено DDS і IQ-корекцію DAC (`D
 * Виправлено: `phy_tx_top.underflow` більше не спрацьовує в паузі між пакетами (прапор `tx_started_out` скидається по закінченню відтворення).
 * Невідоме до першого запуску на залізі: частота `l_clk` (61.44 / 122.88 МГц), поведінка IIO DMA на межі пакета (tlast), формат даних АЦП,
   діапазони підсилення. Регресія симуляції: 66/66.
+
+## Z7020 / PHY v2 (гілка OFDM_PHY_Z7020): прогрес
+Порядок за ТЗ: Python reference -> RTL simulation -> Vivado synthesis (Z7020).
+* **Код**: QC-LDPC, R = 5/6, N = 2160, K = 1800, Z = 60, база 6x36 (інформаційна частина вага 3 без 4-циклів, парність 802.11n-стилю -> кодування накопиченням).
+  2 кодових слова на OFDM-символ (4320 біт + 80 заповнювачів = 4400 біт), 450 байт/символ, ≈50.5 Мбіт/с до накладних витрат.
+  `python/ldpc_ref.py`: кодер, layered normalised min-sum (float), перевірка синдрому. Eb/N0 для FER 1 % (BPSK/AWGN) ≈ 3.5 дБ.
+* **Референс приймача v2** `python/phy2_ref.py`: оцінка каналу по LTS, шум по guard-бінах, MMSE/ZF, max-log LLR (рівномірний або з вагою на субнесучу),
+  деінтерлівінг, LDPC, метрики якості (SNR avg/min, bad subcarriers, pilot EVM). Перший системний результат (символьний рівень, `python/phy2_test.py`):
+  AWGN: uncoded 16-QAM ZF PER 1 % приблизно з 24 дБ, LDPC з ≈ 16 дБ; 2 промені: uncoded PER 65 % ще на 26 дБ, LDPC 0 % з 18 дБ.
+  MMSE vs ZF: з рівномірним LLR MMSE кращий (PER 35 % проти 60 % на 18 дБ), з LLR із вагою на субнесучу різниці майже немає.
+* Далі: інтеграція в `phy_sim` (TX/RX backend v2, порівняння Current vs New), fine timing / residual CFO / SFO, fixed-point моделі, RTL, Vivado Z7020, report.
