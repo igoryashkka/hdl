@@ -418,3 +418,46 @@ with open(os.path.join(OUT, "rxs_ev.mem"), "w") as f:
         f.write(("%08x %08x %08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]), sync_ref.rssi_code(e["r_best"]), _py_evm(_di, _dq, e))) + chr(10))
 print("rx system stream", len(i_a), "samples; events", [(e["n_decl"], e["n_best"]) for e in _ev])
 print("OK vectors in", OUT)
+
+# ---- LDPC decoder (fixed-point, bit-exact vs ldpc_fixed_ref): several codewords back to back ----
+import ldpc_ref, ldpc_fixed_ref
+_rg = np.random.default_rng(77)
+_rate = ldpc_ref.K / ldpc_ref.N
+_cws = []
+_snrs = [6.0, 4.2, 3.7, 3.4, 2.0, 5.0, 3.8, 9.0]        # Eb/N0 [dB]: clean ... marginal ... failing
+_info = _rg.integers(0, 2, (len(_snrs), ldpc_ref.K), dtype=np.uint8)
+_cw = ldpc_ref.encode(_info)
+_llrq = []
+for _i, _s in enumerate(_snrs):
+    _sig = np.sqrt(1 / (2 * _rate * 10 ** (_s / 10)))
+    _y = (1 - 2.0 * _cw[_i]) + _sig * _rg.standard_normal(ldpc_ref.N)
+    _llrq.append(ldpc_fixed_ref.quant_llr(2 * _y / _sig ** 2, 1.5))
+_llrq.append(np.zeros(ldpc_ref.N, np.int64))              # all-zero LLRs
+_llrq.append(np.clip(np.rint(_rg.standard_normal(ldpc_ref.N) * 6), -31, 31).astype(np.int64))    # noise only
+_llrq = np.array(_llrq)
+LDP_MAXIT = 10
+_hard, _its, _done = ldpc_fixed_ref.decode(_llrq, LDP_MAXIT)
+_inw, _exp = [], []
+for _i in range(len(_llrq)):
+    for _w in range(ldpc_ref.N // 4):
+        _inw.append(sum((int(_llrq[_i][4 * _w + _j]) & 0x3F) << (6 * (3 - _j)) for _j in range(4)))
+    _by = np.packbits(_hard[_i][:ldpc_ref.K])
+    _exp += [int(b) for b in _by] + [(int(_done[_i]) << 8) | int(_its[_i])]
+wr("ldp_in.mem", _inw, 6)
+wr("ldp_exp.mem", _exp, 3)
+print("ldpc decoder vectors:", len(_llrq), "codewords, iterations", _its.tolist(), "done", _done.astype(int).tolist())
+
+# ---- LDPC encoder: 4 codewords (2 OFDM symbols: 2 x 540 nibbles + 20 filler nibbles each) ----
+_re = np.random.default_rng(88)
+_einfo = _re.integers(0, 2, (4, ldpc_ref.K), dtype=np.uint8)
+_ecw = ldpc_ref.encode(_einfo)
+_ebytes, _enib = [], []
+for _i in range(4):
+    _ebytes += [int(b) for b in np.packbits(_einfo[_i])]
+    _bits = _ecw[_i].reshape(-1, 4)
+    _enib += [int(a) << 3 | int(b) << 2 | int(c) << 1 | int(d) for a, b, c, d in _bits]
+    if _i % 2 == 1:
+        _enib += [5] * 20
+wr("lpe_in.mem", _ebytes, 2)
+wr("lpe_exp.mem", _enib, 1)
+print("ldpc encoder vectors:", len(_ebytes), "bytes ->", len(_enib), "nibbles")

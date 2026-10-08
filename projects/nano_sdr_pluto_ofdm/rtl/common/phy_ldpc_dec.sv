@@ -1,0 +1,389 @@
+// Module : phy_ldpc_dec   QC-LDPC layered normalised min-sum decoder (R = 5/6, N = 2160, Z = 60, 6 layers), Z-parallel.
+//   Input  : 4 channel LLRs per cycle (6 bit signed, positive = bit 0), 540 words per codeword (natural order, element n = 4*w + j).
+//   Output : the 1800 information bits as 225 bytes (MSB first = lowest bit index), one codeword at a time, status (iterations
+//            used, converged flag) valid with the last byte (st_valid).
+// Architecture (python/ldpc_fixed_ref.py is the bit-exact golden model):
+//   * two banks of 60 x 36 x 8 bit posterior memory (distributed RAM, one 8 bit RAM per circulant element): one bank loads the next
+//     codeword while the other decodes or is read out, so load / decode / output overlap;
+//   * every column is stored rotated by the shift of the last layer that used it (phy_ldpc_pkg::lcoloff): a single 60 x 8 bit
+//     6-stage barrel rotator per read, no inverse rotation, the rotation deltas are constants in the package;
+//   * per layer: pass 1 reads the entries (read, rotate, R_old / Q, min-sum accumulation), pass 2 writes L = Q + R_new back; the
+//     check-node state of the 6 layers circulates in a shift ring;
+//   * early termination after 6 consecutive clean layers (no unsatisfied parity among the read signs and no sign changed on write).
+// Cost: ~(2*deg + 8) cycles per layer, ~260 cycles per iteration.
+module phy_ldpc_dec
+  import phy_ldpc_pkg::*;
+#(
+  parameter int LW = 8,            // posterior / message width
+  parameter int MW = 7             // check magnitude width (min1 / min2)
+) (
+  input  logic              clk,
+  input  logic              rst,
+  input  logic [4:0]        cfg_max_iter,
+  input  logic              in_valid,
+  output logic              in_ready,
+  input  logic signed [5:0] in_llr [4],
+  output logic              out_valid,
+  output logic              out_first,
+  output logic              out_last,
+  output logic [7:0]        out_data,
+  output logic              st_valid,          // with out_last
+  output logic              st_ok,
+  output logic [4:0]        st_iter,
+  output logic              busy
+);
+  localparam int Z    = LZ;
+  localparam int LMAX = (1 << (LW - 1)) - 1;     // 127
+  localparam int MMAX = (1 << MW) - 1;           // 127
+  localparam int NW   = LN / 4;                  // 540 words per codeword
+
+  typedef logic signed [LW-1:0] lv_t [Z];
+
+  // ===================================================================== declarations (shared)
+  logic        ld_sel, dec_sel, out_sel;
+  logic [1:0]  occ, dcd;                          // loaded and not yet output / decoded
+  logic [4:0]  res_iter [2];
+  logic        res_ok [2];
+  logic        out_done_p, out_done_b;                 // output of bank out_done_b finished (one cycle pulse)
+  logic [5:0]  out_col_r;
+
+  logic        dw_en;
+  logic [5:0]  dw_col;
+  lv_t         dw_data;
+  logic [5:0]  rd_addr [2];
+  lv_t         rd_data [2];
+  logic [5:0]  s0_col;
+  logic        dec_busy;
+
+  assign in_ready = !occ[ld_sel];
+  assign busy     = dec_busy || (occ != 2'b00);
+
+  // ===================================================================== loader
+  logic [9:0]  ld_w;
+  logic [5:0]  ld_col;
+  logic [5:0]  ld_r0;                             // element index of j = 0 inside the column (multiple of 4)
+  wire         ld_fire = in_valid && in_ready;
+  wire  [5:0]  ld_off  = lcoloff(int'(ld_col));
+  logic [5:0]  ld_p [4];
+  always_comb begin
+    for (int j = 0; j < 4; j++) begin
+      logic [7:0] x;
+      x = 8'(ld_r0) + 8'(j) + 8'd60 - 8'(ld_off);
+      if (x >= 8'd120) x = x - 8'd120; else if (x >= 8'd60) x = x - 8'd60;
+      ld_p[j] = x[5:0];
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      ld_w <= '0; ld_col <= '0; ld_r0 <= '0; ld_sel <= 1'b0; occ <= 2'b00;
+    end else begin
+      if (ld_fire) begin
+        if (ld_w == 10'(NW - 1)) begin
+          ld_w <= '0; ld_col <= '0; ld_r0 <= '0; occ[ld_sel] <= 1'b1; ld_sel <= ~ld_sel;
+        end else begin
+          ld_w <= ld_w + 1'b1;
+          if (ld_r0 == 6'd56) begin ld_r0 <= '0; ld_col <= ld_col + 1'b1; end
+          else ld_r0 <= ld_r0 + 6'd4;
+        end
+      end
+      if (out_done_p) occ[out_done_b] <= 1'b0;
+    end
+  end
+
+  // ===================================================================== posterior memories (distributed RAM), 2 banks x 60 elements
+  genvar gb, gp;
+  generate
+    for (gb = 0; gb < 2; gb++) begin : g_bank
+      for (gp = 0; gp < Z; gp++) begin : g_el
+        logic signed [LW-1:0] mem [LNB];
+        logic              l_we;
+        logic signed [5:0] l_d;
+        always_comb begin
+          l_we = 1'b0; l_d = '0;
+          for (int j = 0; j < 4; j++)
+            if (ld_fire && ld_sel == 1'(gb) && ld_p[j] == 6'(gp)) begin l_we = 1'b1; l_d = in_llr[j]; end
+        end
+        wire d_we = dw_en && (dec_sel == 1'(gb));
+        always_ff @(posedge clk) begin
+          if (l_we)      mem[ld_col] <= LW'(l_d);
+          else if (d_we) mem[dw_col] <= dw_data[gp];
+        end
+        assign rd_data[gb][gp] = mem[rd_addr[gb]];
+      end
+    end
+  endgenerate
+
+  // ===================================================================== decoder datapath state
+  logic [MW-1:0]    w_m1 [Z], w_m2 [Z];             // working check-node record of the layer in progress
+  logic [4:0]       w_idx [Z];
+  logic             w_par [Z];
+  logic [LDMAX-1:0] w_sg [Z];
+  logic [MW-1:0]    rg_m1 [LMB][Z], rg_m2 [LMB][Z]; // ring: record of the layer processed next is at index 0
+  logic [4:0]       rg_idx [LMB][Z];
+  logic             rg_par [LMB][Z];
+  logic [LDMAX-1:0] rg_sg [LMB][Z];
+  logic             pr_acc [Z];
+  lv_t              qbuf [LDMAX];
+  logic [Z-1:0]     lsg [LDMAX];
+
+  typedef enum logic [2:0] {D_IDLE, D_P1, D_P1D, D_P2, D_P2D, D_END} dst_t;
+  dst_t        dst;
+  logic [2:0]  layer;
+  logic [4:0]  e_cnt, e2_cnt;
+  logic [4:0]  iter_cnt;
+  logic [2:0]  clean_cnt;
+  logic        first_iter;
+  logic [2:0]  drain;
+  logic        unsat_any, flip_any;
+  wire  [4:0]  deg_l = 5'(ldeg(int'(layer)));
+
+  // rotation: out[p] = in[(p + sh) % Z] when enabled
+  function automatic lv_t rot_stage(input lv_t x, input int sh, input logic en);
+    lv_t y;
+    for (int p = 0; p < Z; p++) y[p] = en ? x[(p + sh) % Z] : x[p];
+    return y;
+  endfunction
+
+  // ---- pass 1 pipeline
+  logic        s0_v, s1_v, s2_v, s3_v, s4_v, s5_v;
+  logic [4:0]  s0_k, s1_k, s2_k, s3_k, s4_k, s5_k;
+  logic [5:0]  s0_dl, s1_dl, s2_dl;
+  lv_t         s1_d, s2_d, s3_d, s3_r, s4_q, s4_lr, s5_q, s5_lr;
+
+  wire issue1 = (dst == D_P1);
+  wire issue2 = (dst == D_P2);
+
+  assign rd_addr[0] = (dec_busy && !dec_sel) ? s0_col : out_col_r;
+  assign rd_addr[1] = (dec_busy &&  dec_sel) ? s0_col : out_col_r;
+
+  lv_t rdsel;
+  always_comb for (int p = 0; p < Z; p++) rdsel[p] = dec_sel ? rd_data[1][p] : rd_data[0][p];
+
+  lv_t rotA, rotB, rold;
+  always_comb begin
+    rotA = s1_d;
+    rotA = rot_stage(rotA, 1, s1_dl[0]);
+    rotA = rot_stage(rotA, 2, s1_dl[1]);
+    rotA = rot_stage(rotA, 4, s1_dl[2]);
+    rotB = s2_d;
+    rotB = rot_stage(rotB, 8,  s2_dl[3]);
+    rotB = rot_stage(rotB, 16, s2_dl[4]);
+    rotB = rot_stage(rotB, 32, s2_dl[5]);
+    for (int r = 0; r < Z; r++) begin
+      logic [MW-1:0] mg, sc;
+      mg = (rg_idx[0][r] == s2_k) ? rg_m2[0][r] : rg_m1[0][r];
+      sc = mg - (mg >> 2);
+      if (first_iter) rold[r] = '0;
+      else rold[r] = (rg_par[0][r] ^ rg_sg[0][r][s2_k]) ? -LW'($signed({1'b0, sc})) : LW'($signed({1'b0, sc}));
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    s0_v <= issue1; s0_k <= e_cnt;
+    s0_col <= lcol(int'(layer), int'(e_cnt));
+    s0_dl  <= ldelta(int'(layer), int'(e_cnt));
+    s1_v <= s0_v; s1_k <= s0_k; s1_dl <= s0_dl; s1_d <= rdsel;
+    s2_v <= s1_v; s2_k <= s1_k; s2_dl <= s1_dl; s2_d <= rotA;
+    s3_v <= s2_v; s3_k <= s2_k; s3_d <= rotB; s3_r <= rold;
+    s4_v <= s3_v; s4_k <= s3_k;
+    for (int r = 0; r < Z; r++) begin
+      logic signed [LW:0] d;
+      d = (LW+1)'(s3_d[r]) - (LW+1)'(s3_r[r]);
+      if (d > LMAX) s4_q[r] <= LW'(LMAX); else if (d < -LMAX) s4_q[r] <= LW'(-LMAX); else s4_q[r] <= d[LW-1:0];
+      s4_lr[r] <= s3_d[r];
+    end
+    s5_v <= s4_v; s5_k <= s4_k; s5_q <= s4_q; s5_lr <= s4_lr;
+  end
+
+  // ---- check-node accumulation (stage s5), buffers, ring
+  always_ff @(posedge clk) begin
+    if (dst == D_P1 && e_cnt == 5'd0) begin
+      for (int r = 0; r < Z; r++) begin
+        w_m1[r] <= MW'(MMAX); w_m2[r] <= MW'(MMAX); w_idx[r] <= '0; w_par[r] <= 1'b0; pr_acc[r] <= 1'b0;
+      end
+    end
+    if (s5_v) begin
+      for (int r = 0; r < Z; r++) begin
+        logic [LW-1:0] a;
+        logic [MW-1:0] am;
+        a  = s5_q[r][LW-1] ? LW'(-s5_q[r]) : LW'(s5_q[r]);
+        am = (a > LW'(MMAX)) ? MW'(MMAX) : a[MW-1:0];
+        if (am < w_m1[r]) begin w_m2[r] <= w_m1[r]; w_m1[r] <= am; w_idx[r] <= s5_k; end
+        else if (am < w_m2[r]) w_m2[r] <= am;
+        w_par[r] <= w_par[r] ^ s5_q[r][LW-1];
+        w_sg[r][s5_k] <= s5_q[r][LW-1];
+        pr_acc[r] <= pr_acc[r] ^ s5_lr[r][LW-1];
+      end
+      qbuf[s5_k] <= s5_q;
+      for (int r = 0; r < Z; r++) lsg[s5_k][r] <= s5_lr[r][LW-1];
+    end
+    if (dst == D_END) begin
+      for (int i = 0; i < LMB - 1; i++)
+        for (int r = 0; r < Z; r++) begin
+          rg_m1[i][r] <= rg_m1[i+1][r]; rg_m2[i][r] <= rg_m2[i+1][r]; rg_idx[i][r] <= rg_idx[i+1][r];
+          rg_par[i][r] <= rg_par[i+1][r]; rg_sg[i][r] <= rg_sg[i+1][r];
+        end
+      for (int r = 0; r < Z; r++) begin
+        rg_m1[LMB-1][r] <= w_m1[r]; rg_m2[LMB-1][r] <= w_m2[r]; rg_idx[LMB-1][r] <= w_idx[r];
+        rg_par[LMB-1][r] <= w_par[r]; rg_sg[LMB-1][r] <= w_sg[r];
+      end
+    end
+  end
+
+  // ---- pass 2 pipeline: a1 (Q, R_new) -> a2 (L_new) -> w (write)
+  logic        a1_v, a2_v, w_v;
+  logic [4:0]  a1_k, a2_k;
+  lv_t         a1_q, a1_rn, a2_l, w_l;
+  logic [5:0]  w_colr, w_shr;
+  always_ff @(posedge clk) begin
+    a1_v <= issue2; a1_k <= e2_cnt;
+    a2_v <= a1_v;   a2_k <= a1_k;
+    w_v  <= a2_v;
+    a1_q <= qbuf[e2_cnt];
+    for (int r = 0; r < Z; r++) begin
+      logic [MW-1:0] mg, sc;
+      mg = (w_idx[r] == e2_cnt) ? w_m2[r] : w_m1[r];
+      sc = mg - (mg >> 2);
+      a1_rn[r] <= (w_par[r] ^ w_sg[r][e2_cnt]) ? -LW'($signed({1'b0, sc})) : LW'($signed({1'b0, sc}));
+    end
+    for (int r = 0; r < Z; r++) begin
+      logic signed [LW:0] d;
+      d = (LW+1)'(a1_q[r]) + (LW+1)'(a1_rn[r]);
+      if (d > LMAX) a2_l[r] <= LW'(LMAX); else if (d < -LMAX) a2_l[r] <= LW'(-LMAX); else a2_l[r] <= d[LW-1:0];
+    end
+    w_l <= a2_l;
+    w_colr <= lcol(int'(layer), int'(a2_k));
+    w_shr  <= lshift(int'(layer), int'(a2_k));
+  end
+  assign dw_en   = w_v;
+  assign dw_col  = w_colr;
+  always_comb for (int r = 0; r < Z; r++) dw_data[r] = w_l[r];
+
+  // ---- control FSM
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      dst <= D_IDLE; layer <= '0; e_cnt <= '0; e2_cnt <= '0; iter_cnt <= '0; clean_cnt <= '0; first_iter <= 1'b1;
+      dec_busy <= 1'b0; dec_sel <= 1'b0; dcd <= 2'b00; drain <= '0; unsat_any <= 1'b0; flip_any <= 1'b0;
+    end else begin
+      case (dst)
+        D_IDLE: begin
+          if (occ[dec_sel] && !dcd[dec_sel]) begin
+            dec_busy <= 1'b1; layer <= '0; e_cnt <= '0; iter_cnt <= 5'd1; clean_cnt <= '0; first_iter <= 1'b1;
+            unsat_any <= 1'b0; flip_any <= 1'b0; dst <= D_P1;
+          end
+        end
+        D_P1: begin
+          if (e_cnt + 5'd1 == deg_l) begin dst <= D_P1D; drain <= 3'd6; end
+          e_cnt <= e_cnt + 1'b1;
+        end
+        D_P1D: begin
+          if (drain == 3'd0) begin dst <= D_P2; e2_cnt <= '0; end
+          else drain <= drain - 1'b1;
+        end
+        D_P2: begin
+          if (e2_cnt + 5'd1 == deg_l) begin dst <= D_P2D; drain <= 3'd3; end
+          e2_cnt <= e2_cnt + 1'b1;
+        end
+        D_P2D: begin
+          if (drain == 3'd0) dst <= D_END; else drain <= drain - 1'b1;
+        end
+        D_END: begin
+          logic clean; logic [2:0] cn;
+          clean = !unsat_any && !flip_any;
+          cn = clean ? ((clean_cnt == 3'd7) ? 3'd7 : clean_cnt + 3'd1) : 3'd0;
+          clean_cnt <= cn;
+          unsat_any <= 1'b0; flip_any <= 1'b0;
+          if (cn >= 3'd6 || (layer == 3'(LMB - 1) && iter_cnt == cfg_max_iter)) begin
+            dst <= D_IDLE; dec_busy <= 1'b0; dcd[dec_sel] <= 1'b1;
+            res_iter[dec_sel] <= iter_cnt; res_ok[dec_sel] <= (cn >= 3'd6);
+            dec_sel <= ~dec_sel;
+          end else begin
+            e_cnt <= '0;
+            if (layer == 3'(LMB - 1)) begin layer <= '0; iter_cnt <= iter_cnt + 1'b1; first_iter <= 1'b0; end
+            else layer <= layer + 1'b1;
+            dst <= D_P1;
+          end
+        end
+        default: dst <= D_IDLE;
+      endcase
+      if (out_done_p) dcd[out_done_b] <= 1'b0;
+      if (dst == D_P1D && drain == 3'd0) begin            // parity of the signs read in this layer
+        logic u; u = 1'b0;
+        for (int r = 0; r < Z; r++) u |= pr_acc[r];
+        unsat_any <= u;
+      end
+      if (a2_v) begin                                      // sign changes caused by this entry's write-back
+        logic f; f = 1'b0;
+        for (int r = 0; r < Z; r++) f |= ((a2_l[r] < 0) != lsg[a2_k][r]);
+        if (f) flip_any <= 1'b1;
+      end
+    end
+  end
+
+  // rotation state (offset) of every column of every bank: set to the load placement at the start of decoding, updated on write-back
+  logic [5:0] coff [2][LNB];
+  always_ff @(posedge clk) begin
+    if (dst == D_IDLE && occ[dec_sel] && !dcd[dec_sel])
+      for (int c = 0; c < LNB; c++) coff[dec_sel][c] <= lcoloff(c);
+    if (dw_en) coff[dec_sel][dw_col] <= w_shr;
+  end
+
+  // ===================================================================== output stage
+  typedef enum logic [1:0] {O_IDLE, O_RD, O_SHIFT} ost_t;
+  ost_t         ost;
+  logic [4:0]   o_pair;
+  logic [1:0]   o_cyc;
+  logic [Z-1:0] h0, h1;
+  logic [3:0]   o_byte;
+  logic         o_first;
+
+  // sign vector of the addressed column, rotated back to natural order
+  logic [Z-1:0] nat;
+  always_comb begin
+    logic [Z-1:0] t, u;
+    logic [5:0] off, d;
+    for (int p = 0; p < Z; p++) t[p] = out_sel ? rd_data[1][p][LW-1] : rd_data[0][p][LW-1];
+    off = coff[out_sel][out_col_r];
+    d = (off == 6'd0) ? 6'd0 : 6'(Z) - off;
+    for (int s = 0; s < 6; s++) begin
+      for (int p = 0; p < Z; p++) u[p] = d[s] ? t[(p + (1 << s)) % Z] : t[p];
+      t = u;
+    end
+    nat = t;
+  end
+
+  logic [119:0] cat;                       // bit i of the two columns (natural order) -> MSB-first byte stream
+  always_comb for (int i = 0; i < Z; i++) begin cat[119 - i] = h0[i]; cat[59 - i] = h1[i]; end
+
+  always_ff @(posedge clk) begin
+    out_valid <= 1'b0; out_first <= 1'b0; out_last <= 1'b0; st_valid <= 1'b0; out_done_p <= 1'b0;
+    if (rst) begin
+      ost <= O_IDLE; out_sel <= 1'b0; o_pair <= '0; out_col_r <= '0; o_byte <= '0; o_cyc <= '0; o_first <= 1'b1;
+      st_ok <= 1'b0; st_iter <= '0;
+    end else begin
+      case (ost)
+        O_IDLE: if (dcd[out_sel]) begin ost <= O_RD; o_pair <= '0; out_col_r <= '0; o_cyc <= '0; o_first <= 1'b1; end
+        O_RD: begin
+          o_cyc <= o_cyc + 1'b1;
+          if (o_cyc == 2'd0) begin h0 <= nat; out_col_r <= {o_pair, 1'b0} + 6'd1; end
+          else begin h1 <= nat; ost <= O_SHIFT; o_byte <= '0; end
+        end
+        O_SHIFT: begin
+          out_valid <= 1'b1;
+          out_data  <= cat[119 - 8 * int'(o_byte) -: 8];
+          out_first <= o_first; o_first <= 1'b0;
+          if (o_byte == 4'd14) begin
+            if (o_pair == 5'd14) begin
+              out_last <= 1'b1; st_valid <= 1'b1; out_done_p <= 1'b1; out_done_b <= out_sel; ost <= O_IDLE;
+              st_ok <= res_ok[out_sel]; st_iter <= res_iter[out_sel]; out_sel <= ~out_sel;
+            end else begin
+              o_pair <= o_pair + 1'b1; ost <= O_RD; o_cyc <= '0; out_col_r <= {(o_pair + 5'd1), 1'b0};
+            end
+          end else o_byte <= o_byte + 1'b1;
+        end
+        default: ost <= O_IDLE;
+      endcase
+    end
+  end
+endmodule
