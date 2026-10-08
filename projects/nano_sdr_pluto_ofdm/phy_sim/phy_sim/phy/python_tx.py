@@ -10,12 +10,16 @@ from ..core.backend import TxBackend, register_tx
 @register_tx("python")
 class PythonTxBackend(TxBackend):
     def __init__(self):
+        self.cfg = {}
+        self.code = "none"
         self.gain = 16384
         self.gap = 12000
         self.packets: list[bytes] = []
         self._starts: list[int] = []
 
     def configure(self, config: dict) -> None:
+        self.cfg = config
+        self.code = refs.phy_code(config)
         self.gain = int(config["tx"].get("gain", 16384))
         self.gap = int(config["experiment"].get("packet_gap", 12000))
 
@@ -25,7 +29,7 @@ class PythonTxBackend(TxBackend):
     def get_iq(self) -> np.ndarray:
         parts, self._starts, pos = [], [], 0
         for k, p in enumerate(self.packets):
-            iq = refs.tx_ref.tx_frame(list(p), gain=self.gain)
+            iq = refs.tx_ref.tx_frame(list(p), gain=self.gain, code=self.code)
             frame = np.array([complex(a, b) for a, b in iq])
             self._starts.append(pos)
             parts.append(frame)
@@ -38,9 +42,8 @@ class PythonTxBackend(TxBackend):
     def get_debug(self) -> dict:
         return {"packet_starts": list(self._starts), "samples_per_packet": [self._frame_len(p) for p in self.packets]}
 
-    @staticmethod
-    def _frame_len(p: bytes) -> int:
-        nsym = -(-len(p) // refs.BYTES_PER_SYM)
+    def _frame_len(self, p: bytes) -> int:
+        nsym = -(-len(p) // refs.bytes_per_sym(self.cfg))
         return (nsym + 2) * refs.SYM_LEN
 
     def reset(self) -> None:

@@ -7,8 +7,9 @@ from pathlib import Path
 from .. import refs
 
 
-def rtl_performance(log: dict, clk_hz: float = 2 * refs.FS) -> dict:
+def rtl_performance(log: dict, clk_hz: float = 2 * refs.FS, bytes_per_sym: int | None = None) -> dict:
     """log: numbers emitted by the RTL testbench (cycles, samples, beats). Returns latency / throughput figures."""
+    bps = bytes_per_sym or refs.BYTES_PER_SYM
     out = {}
     clk_per_sample = float(log.get("clks_per_sample", 2))
     if "rx_first_beat_clk" in log and "rx_last_sample_clk" in log:
@@ -22,9 +23,9 @@ def rtl_performance(log: dict, clk_hz: float = 2 * refs.FS) -> dict:
         air_time_s = log["tx_samples"] / refs.FS
         out["tx_payload_throughput_mbps"] = log["tx_payload_bytes"] * 8 / air_time_s / 1e6
     if "tx_first_packet_bytes" in log and log["tx_first_packet_bytes"]:
-        nsym = -(-log["tx_first_packet_bytes"] // refs.BYTES_PER_SYM)
-        out["phy_payload_rate_mbps_this_packet_size"] = nsym * refs.BYTES_PER_SYM * 8 / ((nsym + 2) * refs.SYM_LEN / refs.FS) / 1e6
-        out["phy_payload_rate_mbps_8_symbols"] = 8 * refs.BYTES_PER_SYM * 8 / (10 * refs.SYM_LEN / refs.FS) / 1e6
+        nsym = -(-log["tx_first_packet_bytes"] // bps)
+        out["phy_payload_rate_mbps_this_packet_size"] = nsym * bps * 8 / ((nsym + 2) * refs.SYM_LEN / refs.FS) / 1e6
+        out["phy_payload_rate_mbps_8_symbols"] = 8 * bps * 8 / (10 * refs.SYM_LEN / refs.FS) / 1e6
     for k in ("stall_cycles", "underflow", "overflow", "sim_clks", "tx_gap_samples", "rx_beats", "rx_drops"):
         if k in log:
             out[k] = log[k]

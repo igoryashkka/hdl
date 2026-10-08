@@ -39,7 +39,7 @@ class ExperimentResult:
 
 # ------------------------------------------------------------------ helpers
 def make_payloads(cfg: dict, rng: np.random.Generator) -> list[bytes]:
-    n = int(cfg["payload"]["nsyms"]) * refs.BYTES_PER_SYM
+    n = int(cfg["payload"]["nsyms"]) * refs.bytes_per_sym(cfg)
     pat = cfg["payload"].get("pattern", "random")
     out = []
     for k in range(int(cfg["experiment"].get("n_packets", 1))):
@@ -112,7 +112,7 @@ def run_experiment(cfg: dict, outdir: str | Path | None = None, plots: bool | No
           "cfo_hz": float(cfg["channel"].get("cfo_hz", 0.0)) if rx_iq_override is None else truth.get("cfo_hz", 0.0),
           "timing_offset": delay, "channel": {k: v for k, v in truth.items() if k not in ("fs",)},
           "tx_bits": [golden.tx_bits(p) for p in payloads]}
-    gt["tx_symbols"] = [golden.tx_data_symbols(p)[0] for p in payloads]
+    gt["tx_symbols"] = [golden.tx_data_symbols(p, refs.phy_code(cfg))[0] for p in payloads]
 
     # 7-9: RX
     rx = make_rx(cfg["rx"]["backend"])
@@ -240,6 +240,46 @@ def compute_metrics(cfg, payloads, payload_rx, tx_dbg, rx_dbg, iq_tx, iq_ch, ch,
     if mses:
         m["channel_est_mse_db"] = float(10 * np.log10(np.mean(10 ** (np.asarray(mses) / 10))))
         m["channel_est_error_db_per_packet"] = [float(v) for v in mses]
+    # LDPC / channel-quality statistics of the new PHY
+    pkts = rx_dbg.get("packets") or []
+    its_all = [i for p_ in pkts for i in p_.get("ldpc_iterations", [])]
+    if its_all:
+        ncw = sum(p_.get("ldpc_codewords", 0) for p_ in pkts)
+        nfail = sum(p_.get("ldpc_failures", 0) for p_ in pkts)
+        m["ldpc_iterations_mean"] = float(np.mean(its_all))
+        m["ldpc_iterations_max"] = int(max(its_all))
+        m["ldpc_decoding_failures"] = int(nfail)
+        m["fer"] = nfail / ncw if ncw else 0.0                       # frame = LDPC codeword
+    qs = [p_ for p_ in pkts if "snr_avg_db" in p_]
+    if qs:
+        m["channel_snr_db_mean"] = float(np.mean([p_["snr_avg_db"] for p_ in qs]))
+        m["snr_min_db_mean"] = float(np.mean([p_["snr_min_db"] for p_ in qs]))
+        m["bad_subcarriers_mean"] = float(np.mean([p_["bad_subcarriers"] for p_ in qs]))
+    # fine timing / residual CFO / SFO estimation errors of the new PHY (estimate vs the injected ground truth)
+    tau_errs, sfo_errs, cfo_res = [], [], []
+    for r_i, k in assoc:
+        if r_i < len(ok_events) and "tau_est" in ok_events[r_i]:
+            tau_true = gt["lts_start"][k] + refs.P.CP_LEN - ok_events[r_i]["w0"]
+            tau_errs.append(ok_events[r_i]["tau_est"] - tau_true)
+        pk = pkts[r_i] if r_i < len(pkts) else None
+        if pk is not None and pk.get("sfo_slopes"):
+            sl = pk["sfo_slopes"][-1] / 2 ** 32 * 2 * np.pi                       # rad per bin at the last data symbol
+            n_last = len(pk["sfo_slopes"])
+            ppm_est = sl * 2048 / (2 * np.pi) / (n_last * refs.SYM_LEN) * 1e6      # window drift relative to the LTS = n * SYM_LEN * ppm
+            sfo_errs.append(abs(ppm_est) - abs(float(cfg["channel"].get("sfo_ppm", 0.0))))
+            sfo_errs[-1] = abs(abs(ppm_est) - abs(float(cfg["channel"].get("sfo_ppm", 0.0))))
+            a = pk.get("angles_raw") or []
+            if len(a) > 1:
+                d = [((a[i + 1] - a[i] + 2 ** 31) % 2 ** 32 - 2 ** 31) for i in range(len(a) - 1)]
+                cfo_res.append(np.mean(d) / 2 ** 32 * refs.FS / refs.SYM_LEN)       # Hz: dtheta per symbol / (2 pi T_sym)
+    if tau_errs:
+        m["fine_timing_error_abs_max"] = float(np.max(np.abs(tau_errs)))
+        m["fine_timing_error_mean"] = float(np.mean(tau_errs))
+    if sfo_errs:
+        m["sfo_estimation_error_ppm"] = float(np.max(sfo_errs))
+    if cfo_res:
+        m["cfo_residual_estimate_hz_mean"] = float(np.mean(cfo_res))
+        m["cfo_residual_estimate_hz_absmax"] = float(np.max(np.abs(cfo_res)))
     # ICI / leakage proxy
     bodies = [int(round(s)) + refs.P.CP_LEN for sl in gt["data_symbol_starts"][:1] for s in sl]
     m["ici_null_bin_db"] = st.null_bin_ratio_db(iq_ch, bodies)
@@ -248,7 +288,7 @@ def compute_metrics(cfg, payloads, payload_rx, tx_dbg, rx_dbg, iq_tx, iq_ch, ch,
     perf.update(rx_dbg.get("perf", {}))
     perf.update(tx_dbg.get("perf", {}))
     if perf:
-        m["rtl_performance"] = performance.rtl_performance(perf)
+        m["rtl_performance"] = performance.rtl_performance(perf, bytes_per_sym=refs.bytes_per_sym(cfg))
     if truth.get("adc"):
         m["adc"] = truth["adc"]
     return m

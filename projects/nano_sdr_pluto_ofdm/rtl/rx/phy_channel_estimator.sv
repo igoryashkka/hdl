@@ -30,7 +30,9 @@ module phy_channel_estimator
   input  logic                   eng_we,
   input  logic [10:0]            eng_wa,
   input  logic [39:0]            eng_wd,
-  output logic [41:0]            sig_sum        // sum of |G|^2 over the bins of the frame (valid at `done`)
+  output logic [41:0]            sig_sum,       // sum of |G|^2 over the bins of the frame (valid at `done`)
+  output logic                   tau_valid,     // fine timing of the LTS window (tau_q8 in 1/256 sample, positive = window early), ~40 cycles after the frame
+  output logic signed [19:0]     tau_q8
 );
   localparam int NA = NUM_ACTIVE_SC;
 
@@ -198,6 +200,29 @@ module phy_channel_estimator
     w_o <= z_o2 ? 40'd0 : {sat_m(sr_o2), sat_m(si_o2), E_n};
     ao <= ao2;
   end
+
+  // ---------------------------------------------------------------- fine timing: P = sum conj(G_s) G_{s+1} (adjacent bins, not across the DC gap)
+  logic signed [IQ_W-1:0] gp_r, gp_i; logic have_prev;
+  logic p1v, p1l; logic signed [31:0] m_rr, m_ii, m_ri, m_ir;
+  logic signed [43:0] pacc_r, pacc_i; logic tstart;
+  wire  pair_ok = vc && !fc && (ac != 11'd600);
+  always_ff @(posedge clk) begin
+    if (rst) begin p1v <= 1'b0; p1l <= 1'b0; tstart <= 1'b0; pacc_r <= '0; pacc_i <= '0; end
+    else begin
+      tstart <= 1'b0;
+      if (vc) begin gp_r <= gr_c; gp_i <= gi_c; end
+      p1v <= pair_ok; p1l <= vc & lc;
+      m_rr <= 32'(gp_r) * 32'(gr_c); m_ii <= 32'(gp_i) * 32'(gi_c);
+      m_ri <= 32'(gp_r) * 32'(gi_c); m_ir <= 32'(gp_i) * 32'(gr_c);
+      if (vc && fc) begin pacc_r <= '0; pacc_i <= '0; end
+      else if (p1v) begin
+        pacc_r <= pacc_r + 44'(m_rr) + 44'(m_ii);
+        pacc_i <= pacc_i + 44'(m_ri) - 44'(m_ir);
+      end
+      if (p1l) tstart <= 1'b1;
+    end
+  end
+  phy_tau_est u_tau (.clk, .rst, .start(tstart), .p_re(pacc_r), .p_im(pacc_i), .tau_valid, .tau_q8);
 
   // ---------------------------------------------------------------- weight RAM (write at stage O, synchronous read port)
   logic [39:0] wram [NA];

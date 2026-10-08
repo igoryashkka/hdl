@@ -327,6 +327,7 @@ wr("cest_exp.mem", [pack_w(int(a), int(b), int(c)) for a, b, c in zip(mr, mi, E)
 import phy2_fixed_ref as _pf0
 wr("cest_lg.mem", [int(v) & 0xFFF for v in _pf0.chest_lg(yr_a, yi_a)], 3)
 wr("cest_sum.mem", [_pf0.chest_lg_sum(yr_a, yi_a)[1]], 11)
+wr("cest_tau.mem", [_pf0.timing_est(yr_a, yi_a)[0] & 0xFFFFF], 5)
 # gaps: valid + {first,last} + data
 seq = []
 for k, (a, b) in enumerate(fr):
@@ -377,6 +378,26 @@ for f, th in enumerate(thetas):
     pt_exp.append(l1)        # pilot L1 error
 wr("cpe_in.mem", pt_in, 9)
 wr("cpe_exp.mem", pt_exp, 8)
+# slope mode (phase ramp over frequency = sampling clock offset): same QAM frames, per-frame slope in rad per bin
+slopes_rad = [0.0, 2.0e-4, -4.0e-4, 8.0e-4, -1.2e-3, 3.4e-4]
+ps_in, ps_exp = [], []
+_np3 = np.random.default_rng(15)
+for f, th in enumerate(thetas):
+    sym = np.zeros(NUM_ACTIVE_SC, complex)
+    sym[rfx.DATA_S] = qpts[f % qpts.shape[0]]
+    sym[rfx.PILOT_S] = psg * 12288
+    sym = sym * np.exp(1j * (th + slopes_rad[f] * rfx.FREQ_S)) + 300 * (_np3.standard_normal(NUM_ACTIVE_SC) + 1j * _np3.standard_normal(NUM_ACTIVE_SC))
+    xr = np.clip(np.round(sym.real), -32768, 32767).astype(np.int64); xi = np.clip(np.round(sym.imag), -32768, 32767).astype(np.int64)
+    yr, yi, ang, sbin = rfx.cpe_sfo_track(xr, xi)
+    sgp = rfx.pilot_sign()
+    l1 = int(np.sum(np.abs(yr[rfx.PILOT_S].astype(np.int64) - sgp * rfx.A_LTS) + np.abs(yi[rfx.PILOT_S].astype(np.int64))))
+    for k in range(NUM_ACTIVE_SC):
+        ps_in.append((int(k == 0) << 33) | (int(k == NUM_ACTIVE_SC - 1) << 32) | ((int(xr[k]) & 0xFFFF) << 16) | (int(xi[k]) & 0xFFFF))
+    for k in rfx.DATA_S:
+        ps_exp.append(((int(yr[k]) & 0xFFFF) << 16) | (int(yi[k]) & 0xFFFF))
+    ps_exp += [ang, l1, int(sbin) & 0xFFFFFFFF]
+wr("cps_in.mem", ps_in, 9)
+wr("cps_exp.mem", ps_exp, 8)
 
 # ---- RX decode back-end (demap -> deinterleave -> hard bits -> descramble): 3 symbols, noisy QAM points ----
 _pay3 = [rng.getrandbits(8) for _ in range(3 * BYTES_PER_OFDM - 37)]

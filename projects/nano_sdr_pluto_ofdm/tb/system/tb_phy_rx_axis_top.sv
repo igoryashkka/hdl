@@ -4,7 +4,7 @@
 //   DMA beat counter == 2 packets, ADC peak > 0, rssi code / evm / cfo_inc / n_best of the last packet vs the Python values,
 //   statistics clear (counters restart), soft reset (counters of the PHY restart).
 module tb_phy_rx_axis_top;
-  localparam int NS = 30745, NPKT = 2, NSYMS = 2, PBYTES = NSYMS * 550, NBEATS = 3 + (PBYTES + 7) / 8;
+  localparam int NS = 30745, NPKT = 2, NSYMS = 2, PBYTES = NSYMS * 450, NBEATS = 6 + (PBYTES + 7) / 8;     // coded: header v3 (6 beats)
   logic clk = 0, aclk = 0, rst = 1, aresetn = 0;
   always #4 clk = ~clk;
   always #5 aclk = ~aclk;
@@ -47,15 +47,15 @@ module tb_phy_rx_axis_top;
   endtask
 
   logic [31:0] v;
-  logic [31:0] w [16];
+  logic [31:0] w [32];
   task automatic read_status;
     snap();
-    for (int k = 0; k < 16; k++) axi_read(12'h080 + 4 * k, w[k]);
+    for (int k = 0; k < 32; k++) axi_read(12'h080 + 4 * k, w[k]);
   endtask
 
   initial begin
-    $readmemh("vec/rxs_in.mem", samples);
-    $readmemh("vec/rxs_ev.mem", ev);
+    $readmemh("vec/rxc_in.mem", samples);
+    $readmemh("vec/rxc_ev.mem", ev);
     repeat (6) @(posedge clk); rst = 0; repeat (4) @(posedge aclk); aresetn = 1; repeat (4) @(posedge clk);
     axi_read(12'h000, v); if (v !== 32'h4F465258) begin errors++; $display("ID %08x", v); end
     axi_read(12'h010, v); if (v[7:0] !== NSYMS) begin errors++; $display("cfg nsyms %0d", v); end
@@ -78,6 +78,8 @@ module tb_phy_rx_axis_top;
     if (w[10] !== ev[4 * (NPKT - 1)]) begin errors++; $display("n_best %0d exp %0d", w[10], ev[4 * (NPKT - 1)]); end
     if (w[11][15:0] !== NPKT - 1) begin errors++; $display("seq register %0d (exp %0d: count at commit)", w[11][15:0], NPKT - 1); end
     if (w[8] !== hdr2[NPKT - 1][31:0] || w[7] !== {hdr2[NPKT - 1][63:48], hdr2[NPKT - 1][47:32]}) begin errors++; $display("regs vs header beat: evm %08x/%08x", w[8], hdr2[NPKT - 1][31:0]); end
+    if (w[19][15:0] !== 4 * NPKT || w[19][31:16] !== 0) begin errors++; $display("codewords %0d failed %0d (exp %0d / 0)", w[19][15:0], w[19][31:16], 4 * NPKT); end
+    if (w[16][15:0] == 0 || w[17][15:0] > 100 || w[31][1:0] !== 2'b11) begin errors++; $display("quality words %08x %08x feature %08x", w[16], w[17], w[31]); end
     if (w[12] !== NPKT * NBEATS) begin errors++; $display("beats %0d != %0d", w[12], NPKT * NBEATS); end
     // clear: counters restart, PHY counters keep running
     axi_write(12'h004, 2); read_status();

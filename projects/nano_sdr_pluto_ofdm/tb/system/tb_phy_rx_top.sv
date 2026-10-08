@@ -5,7 +5,7 @@
 //   payload bytes equal to the transmitted payload (uncoded 16-QAM, expected error-free at these SNRs),
 //   tlast only on the final beat, exactly 2 packets, 2 detections, no watchdog, no drops.
 module tb_phy_rx_top #(parameter bit CODED = 1'b0);
-  localparam int NSYMS = 2, NPKT = 2, PBYTES = NSYMS * (CODED ? 450 : 550), NH = CODED ? 5 : 3, NBEATS = NH + (PBYTES + 7) / 8;
+  localparam int NSYMS = 2, NPKT = 2, PBYTES = NSYMS * (CODED ? 450 : 550), NH = CODED ? 6 : 3, NBEATS = NH + (PBYTES + 7) / 8;
   localparam int NS = 30745;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
@@ -18,7 +18,8 @@ module tb_phy_rx_top #(parameter bit CODED = 1'b0);
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   logic [15:0] st_det_count, st_pkt_count, st_drop_count, st_wd_count; logic [7:0] st_flags; logic st_busy;
-  logic cfg_mmse = 1; logic [4:0] cfg_max_iter = 10; logic signed [12:0] cfg_bad_thr = 106;
+  logic cfg_mmse = 1; logic [4:0] cfg_max_iter = 10; logic signed [12:0] cfg_bad_thr = 106; logic cfg_ft_en = 1; logic [7:0] cfg_tau_tgt = 56;
+  logic signed [19:0] st_tau_q8; logic signed [7:0] st_w0_adj;
   logic [15:0] st_snr_avg, st_snr_min, st_bad, st_noise, st_cw_count, st_cwfail_count; logic [7:0] st_ldpc_fail; logic [4:0] st_ldpc_imax; logic [11:0] st_ldpc_isum;
   logic [15:0] st_rssi, st_angle, st_seq; logic [31:0] st_evm, st_cfo_inc, st_nbest; logic st_pkt_pulse;
   phy_rx_top #(.CODED(CODED)) dut (.*);

@@ -22,7 +22,8 @@
 module phy_tx_axis_top #(
   parameter [15:0] GAIN    = 16'd16384,
   parameter [31:0] GAP     = 32'd16384,
-  parameter        ENABLE  = 1'b1
+  parameter        ENABLE  = 1'b1,
+  parameter        CODED   = 1'b1             // LDPC R=5/6 (450 payload bytes per OFDM symbol, Zynq-7020 design); 0 = uncoded (550)
 ) (
   (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF PHY_STREAM" *)   /* keeps l_clk away from the AXI-Lite port (ad_cpu_interconnect picks the S_AXI clock by ASSOCIATED_BUSIF) */
   input         clk,           // AD9361 l_clk
@@ -126,7 +127,7 @@ module phy_tx_axis_top #(
   wire [15:0] iq_re, iq_im;
   wire        iq_valid, underflow, overflow, trunc;
 
-  phy_tx_top u_phy (
+  phy_tx_top #(.CODED(CODED)) u_phy (
     .clk(clk), .rst(rst_r), .gain(gain_w),
     .s_valid(byte_valid), .s_ready(phy_ready), .s_data(word[7:0]), .s_last(last_byte),
     .iq_pull(dac_valid), .iq_re(iq_re), .iq_im(iq_im), .iq_valid(iq_valid),

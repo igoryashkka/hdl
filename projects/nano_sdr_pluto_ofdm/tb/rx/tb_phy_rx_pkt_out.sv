@@ -3,11 +3,11 @@
 // payload packed LSB-first (zero padded), tlast only on the final beat, stable data/valid while stalled, seq/pkt_count
 // counters, commit during a running transfer dropped (dropped counter), reset between packets.
 module tb_phy_rx_pkt_out #(parameter bit V3 = 1'b0);
-  localparam int NH = V3 ? 5 : 3;
+  localparam int NH = V3 ? 6 : 3;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
   logic wr_en = 0; logic [12:0] wr_addr = 0; logic [7:0] wr_data = 0;
-  logic commit = 0; logic [15:0] c_nbytes = 0; logic [7:0] c_flags = 0; logic [31:0] c_cfo_inc = 0, c_nbest = 0, c_angle = 0, c_evm = 0; logic [15:0] c_rssi = 0; logic [63:0] c_b3 = 0, c_b4 = 0;
+  logic commit = 0; logic [15:0] c_nbytes = 0; logic [7:0] c_flags = 0; logic [31:0] c_cfo_inc = 0, c_nbest = 0, c_angle = 0, c_evm = 0; logic [15:0] c_rssi = 0; logic [63:0] c_b3 = 0, c_b4 = 0, c_b5 = 0;
   logic busy; logic [15:0] dropped, pkt_count;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   phy_rx_pkt_out #(.HDR_V3(V3)) dut (.*);
@@ -39,13 +39,13 @@ module tb_phy_rx_pkt_out #(parameter bit V3 = 1'b0);
     for (int i = 0; i < n; i++) payload[i] = $urandom;
     for (int i = 0; i < n; i++) begin @(posedge clk); #1; wr_en = 1; wr_addr = i; wr_data = payload[i]; end
     @(posedge clk); #1; wr_en = 0;
-    c_nbytes = n; c_flags = 8'h05; c_cfo_inc = $urandom; c_nbest = $urandom; c_angle = $urandom; c_rssi = $urandom; c_evm = $urandom; c_b3 = {$urandom, $urandom}; c_b4 = {$urandom, $urandom};
+    c_nbytes = n; c_flags = 8'h05; c_cfo_inc = $urandom; c_nbest = $urandom; c_angle = $urandom; c_rssi = $urandom; c_evm = $urandom; c_b3 = {$urandom, $urandom}; c_b4 = {$urandom, $urandom}; c_b5 = {$urandom, $urandom};
     nb = NH + (n + 7) / 8;
     exp_beats = nb;
     exp_data[0] = {16'hA55A, V3 ? 8'h03 : 8'h02, 8'h05, 16'(n), 16'(seq_exp)};
     exp_data[1] = {c_cfo_inc, c_nbest};
     exp_data[2] = {c_angle[31:16], c_rssi, c_evm};
-    if (V3) begin exp_data[3] = c_b3; exp_data[4] = c_b4; end
+    if (V3) begin exp_data[3] = c_b3; exp_data[4] = c_b4; exp_data[5] = c_b5; end
     for (int b = 0; b < (n + 7) / 8; b++) begin
       w = '0;
       for (int k = 0; k < 8; k++) if (b * 8 + k < n) w[8*k +: 8] = payload[b * 8 + k];

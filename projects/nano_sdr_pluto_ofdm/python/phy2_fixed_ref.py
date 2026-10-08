@@ -77,6 +77,27 @@ def chest_lg_sum(yr, yi):
     return np.array(out, dtype=np.int64), tot
 
 
+def timing_est(yr, yi):
+    """Fine timing from the LTS: P = sum over adjacent bins (not across the DC gap) conj(G_s) G_{s+1}; tau = -arg(P) N / 2 pi in 1/256 sample
+    (positive = the FFT window starts earlier than the symbol body).  Returns (tau_q8, P_re, P_im)."""
+    import sync_ref
+    sg = rf.lts_sign()
+    g = []
+    for a, b, s_ in zip(yr, yi, sg):
+        g.append((max(-32767, min(32767, int(a) * int(s_))), max(-32767, min(32767, int(b) * int(s_)))))
+    pr = pi = 0
+    for k in range(len(g) - 1):
+        if k == NUM_ACTIVE_SC // 2 - 1:
+            continue
+        a, b = g[k]
+        c, d = g[k + 1]
+        pr += a * c + b * d
+        pi += a * d - b * c
+    ang = sync_ref.cordic_vec(*rf._norm17(pr, pi))
+    ang_s = ang - (1 << 32) if ang >= (1 << 31) else ang
+    return (-ang_s) >> 13, pr, pi
+
+
 def noise_code(yfull_r, yfull_i) -> int:
     s = int(np.sum(np.asarray(yfull_r)[GUARD].astype(np.int64) ** 2 + np.asarray(yfull_i)[GUARD].astype(np.int64) ** 2))
     return lgcode(s) + CNU, s
@@ -131,7 +152,7 @@ def demap_soft(xr, xi, T, gm, ge):
     return out
 
 
-def receive_symbols(y_lts_full, y_data_full, mmse=True):
+def receive_symbols(y_lts_full, y_data_full, mmse=True, sfo_track=True):
     """y_*_full: integer (re, im) arrays of 2048 bins (rx_fft outputs). Returns (llr (nsym, 1100, 4), diagnostics)."""
     yr, yi = rf.select_active(*y_lts_full)
     mr, mi, E = rf.chest(yr, yi)
@@ -142,14 +163,19 @@ def receive_symbols(y_lts_full, y_data_full, mmse=True):
     llrs = []
     angs = []
     eqs = []
+    slopes = []
     for yfr, yfi in y_data_full:
         dr, di = rf.select_active(yfr, yfi)
         xr, xi = rf.equalize(dr, di, mr2, mi2, E)
-        xr, xi, ang = rf.cpe_track(xr, xi)
+        if sfo_track:
+            xr, xi, ang, sbin = rf.cpe_sfo_track(xr, xi)
+            slopes.append(sbin)
+        else:
+            xr, xi, ang = rf.cpe_track(xr, xi)
         angs.append(ang)
         eqs.append((xr[ds].copy(), xi[ds].copy()))
         llrs.append(demap_soft(xr[ds], xi[ds], T[ds], gm[ds], ge[ds]))
-    diag = {"lgm": lgm, "lgnu": lgnu, "noise_sum": S, "sig_sum": sig_sum, "quality": quality_codes(lgm, lgnu, sig_sum), "angles": angs, "eq": eqs, "T": T[ds], "gm": gm[ds], "ge": ge[ds]}
+    diag = {"lgm": lgm, "lgnu": lgnu, "noise_sum": S, "sig_sum": sig_sum, "quality": quality_codes(lgm, lgnu, sig_sum), "angles": angs, "slopes": slopes, "eq": eqs, "T": T[ds], "gm": gm[ds], "ge": ge[ds]}
     return np.array(llrs), diag
 
 

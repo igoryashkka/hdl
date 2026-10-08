@@ -35,6 +35,10 @@ ofdm_ref = importlib.import_module("ofdm_ref")
 qam_ref = importlib.import_module("qam_ref")
 scrambler_ref = importlib.import_module("scrambler_ref")
 interleaver_ref = importlib.import_module("interleaver_ref")
+ldpc_ref = importlib.import_module("ldpc_ref")
+ldpc_fixed_ref = importlib.import_module("ldpc_fixed_ref")
+phy2_ref = importlib.import_module("phy2_ref")
+phy2_fixed_ref = importlib.import_module("phy2_fixed_ref")
 
 P = phy_params                          # shorthand: FFT_SIZE, CP_LEN, SAMPLE_RATE_HZ, ...
 FS = float(P.SAMPLE_RATE_HZ)
@@ -44,3 +48,12 @@ BYTES_PER_SYM = P.BYTES_PER_OFDM
 # calibration of the Schmidl-Cox detector (python/sync_test.py): sync-symbol start = n_best - SYNC_PEAK_OFFSET (+-20)
 SYNC_PEAK_OFFSET = 2184
 LTS_WINDOW_OFFSET = 104                 # FFT window of the LTS starts at n_best + 104 (RTL W0_OFFSET)
+
+
+def phy_code(cfg: dict) -> str:
+    """"ldpc" for the new PHY (LDPC R=5/6 + soft LLR + MMSE), "none" for the current uncoded PHY."""
+    return "ldpc" if (cfg.get("phy") or {}).get("mode", "current") == "new" else "none"
+
+
+def bytes_per_sym(cfg: dict | None = None) -> int:
+    return phy2_ref.INFO_BYTES_PER_SYM if (cfg and phy_code(cfg) == "ldpc") else BYTES_PER_SYM

@@ -10,9 +10,16 @@ def tx_iq(payload: bytes, gain: int = 16384) -> np.ndarray:
     return np.array([complex(a, b) for a, b in refs.tx_ref.tx_frame(list(payload), gain=gain)])
 
 
-def tx_data_symbols(payload: bytes):
-    """(nsym, 1100) complex ideal 16-QAM points (TX constellation units, 4096 per level) + interleaved nibble words."""
-    return refs.tx_ref.tx_data_symbols(list(payload))
+def tx_data_symbols(payload: bytes, code: str = "none"):
+    """(nsym, 1100) complex ideal 16-QAM points (TX constellation units, 4096 per level) + interleaved nibble words.
+    code "ldpc": the data symbols of the coded PHY (450 payload bytes per symbol)."""
+    if code != "ldpc":
+        return refs.tx_ref.tx_data_symbols(list(payload))
+    nsym = -(-len(payload) // refs.phy2_ref.INFO_BYTES_PER_SYM)
+    words = refs.phy2_ref.tx_words(bytes(payload), nsym, "ldpc")
+    bits = np.array([[(w >> (3 - k)) & 1 for k in range(4)] for w in words]).reshape(-1)
+    iq = refs.qam_ref.map_symbols(bits, order=16)
+    return (iq[:, 0] + 1j * iq[:, 1]).reshape(nsym, refs.P.NUM_DATA_SC), words
 
 
 def tx_bits(payload: bytes) -> np.ndarray:

@@ -27,6 +27,8 @@ module phy_rx_top
   input  logic                   cfg_mmse,         // coded mode: 1 = MMSE, 0 = ZF
   input  logic [4:0]             cfg_max_iter,     // coded mode: LDPC iteration limit
   input  logic signed [12:0]     cfg_bad_thr,      // bad-subcarrier threshold (SNR code, 106 = 10 dB)
+  input  logic                   cfg_ft_en,        // fine timing loop: shift the next packet's FFT window by the measured LTS timing error
+  input  logic [7:0]             cfg_tau_tgt,      // wanted LTS window earliness [samples] (nominal calibration: ~54)
   input  logic                   in_valid,
   input  logic signed [IQ_W-1:0] in_i,
   input  logic signed [IQ_W-1:0] in_q,
@@ -55,7 +57,9 @@ module phy_rx_top
   output logic [4:0]             st_ldpc_imax,
   output logic [11:0]            st_ldpc_isum,
   output logic [15:0]            st_cw_count,     // decoded codewords / non-converged codewords since reset
-  output logic [15:0]            st_cwfail_count
+  output logic [15:0]            st_cwfail_count,
+  output logic signed [19:0]     st_tau_q8,       // fine timing of the last packet (1/256 sample, positive = window early)
+  output logic signed [7:0]      st_w0_adj        // current window correction [samples]
 );
   // ===================================================================== front end
   logic sv_i, sv_q; logic signed [IQ_W-1:0] si, sq;
@@ -128,12 +132,13 @@ module phy_rx_top
     .out_valid(bs_valid), .out_first(bs_first), .out_last(bs_last), .out_pilot(bs_pilot), .out_re(bs_re), .out_im(bs_im)
   );
 
-  logic ce_done; logic [10:0] eq_addr; logic [39:0] w_data;
+  logic ce_done; logic [10:0] eq_addr; logic [39:0] w_data; logic tau_valid; logic signed [19:0] tau_q8;
   logic [10:0] eg_ra, eg_wa; logic [39:0] eg_rw, eg_wd; logic signed [11:0] eg_rlg; logic eg_we; logic [41:0] sig_sum;
   phy_channel_estimator u_chest (
     .clk, .rst(rst | be_rst), .in_valid(bs_valid & lts_q), .in_first(bs_first), .in_last(bs_last), .in_re(bs_re), .in_im(bs_im),
     .done(ce_done), .rd_en(1'b1), .rd_addr(eq_addr), .rd_data(w_data),
-    .eng_ra(eg_ra), .eng_rw(eg_rw), .eng_rlg(eg_rlg), .eng_we(eg_we), .eng_wa(eg_wa), .eng_wd(eg_wd), .sig_sum(sig_sum)
+    .eng_ra(eg_ra), .eng_rw(eg_rw), .eng_rlg(eg_rlg), .eng_we(eg_we), .eng_wa(eg_wa), .eng_wd(eg_wd), .sig_sum(sig_sum),
+    .tau_valid, .tau_q8
   );
 
   // coded mode: noise estimate (guard bins of the LTS FFT frame) + MMSE post engine (weights, LLR parameters, channel quality)
@@ -171,11 +176,12 @@ module phy_rx_top
   logic signed [IQ_W-1:0] pt_re, pt_im;
   logic [31:0] pt_angle, last_angle;
   logic pt_l1_valid; logic [23:0] pt_l1;
-  phy_phase_tracker u_trk (
+  logic [31:0] pt_slope; logic pt_slope_valid;
+  phy_phase_tracker #(.SLOPE(CODED)) u_trk (
     .clk, .rst(rst | be_rst), .in_valid(eq_valid), .in_first(eq_first), .in_last(eq_last), .in_re(eq_re), .in_im(eq_im),
     .out_valid(pt_valid), .out_first(pt_first), .out_last(pt_last), .out_re(pt_re), .out_im(pt_im),
     .angle_o(pt_angle), .angle_valid(pt_angle_valid), .busy(pt_busy), .overrun(pt_overrun),
-    .l1_valid(pt_l1_valid), .l1_val(pt_l1)
+    .l1_valid(pt_l1_valid), .l1_val(pt_l1), .slope_o(pt_slope), .slope_valid(pt_slope_valid)
   );
   always_ff @(posedge clk) begin
     if (rst) last_angle <= '0; else if (pt_angle_valid) last_angle <= pt_angle;
@@ -213,6 +219,16 @@ module phy_rx_top
     assign cw_pulse = 1'b0; assign cw_fail_pulse = 1'b0;
   end
 
+  // residual CFO / SFO observables of the packet: CPE angle of the first data symbol and phase slope of the last one
+  logic [31:0] angle_first, slope_last; logic first_sym;
+  always_ff @(posedge clk) begin
+    if (rst || arm_valid) begin first_sym <= 1'b1; angle_first <= '0; slope_last <= '0; end
+    else begin
+      if (pt_angle_valid && first_sym) begin angle_first <= pt_angle; first_sym <= 1'b0; end
+      if (pt_slope_valid) slope_last <= pt_slope;
+    end
+  end
+
   // quality / LDPC statistics of the last packet (held until the next one)
   logic prm_late;
   logic [7:0] fail_l; logic [4:0] imax_l; logic [11:0] isum_l;
@@ -246,10 +262,11 @@ module phy_rx_top
   logic        late_seen;
   wire  [15:0] nbytes_total = 16'(cfg_nsyms) * 16'(CODED ? 450 : BYTES_PER_OFDM);
   wire [63:0] hdr_b3 = {st_snr_avg, st_snr_min, st_bad, st_noise};
-  wire [63:0] hdr_b4 = {fail_l, 3'b0, imax_l, 4'b0, isum_l, 6'b0, cfg_mmse, CODED, 24'd0};
+  wire [63:0] hdr_b5 = {angle_first, slope_last};
+  wire [63:0] hdr_b4 = {fail_l, 3'b0, imax_l, 4'b0, isum_l, 6'b0, cfg_mmse, CODED, 4'd0, st_tau_q8};
   phy_rx_pkt_out #(.RAM_BYTES(MAX_SYMS * BYTES_PER_OFDM), .HDR_V3(CODED)) u_pkt (
     .clk, .rst, .wr_en(dc_valid), .wr_addr(wr_addr_cur), .wr_data(dc_data),
-    .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle), .c_rssi(rssi_q), .c_evm(evm_acc), .c_b3(hdr_b3), .c_b4(hdr_b4),
+    .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle), .c_rssi(rssi_q), .c_evm(evm_acc), .c_b3(hdr_b3), .c_b4(hdr_b4), .c_b5(hdr_b5),
     .busy(po_busy), .dropped(po_drop), .pkt_count(po_cnt),
     .m_axis_valid, .m_axis_ready, .m_axis_data, .m_axis_last
   );
@@ -264,6 +281,20 @@ module phy_rx_top
   logic        wd_hit;
 
   assign flags_q = {2'b0, (fail_l != 8'd0), prm_late, late_seen, fft_overflow, pt_overrun, il_ovf};
+  // fine timing loop (coded mode): w0_adj += (tau - target) / 2 per packet, clamped to +-40 samples
+  logic signed [7:0] w0_adj;
+  wire  signed [20:0] tau_err = 21'(tau_q8) - $signed({1'b0, cfg_tau_tgt, 8'd0});
+  wire  signed [12:0] adj_step = 13'(tau_err >>> 9);
+  wire  signed [12:0] adj_nxt  = 13'(w0_adj) + adj_step;
+  always_ff @(posedge clk) begin
+    if (rst) w0_adj <= '0;
+    else if (!cfg_ft_en) w0_adj <= '0;
+    else if (tau_valid && CODED) w0_adj <= (adj_nxt > 13'sd40) ? 8'sd40 : (adj_nxt < -13'sd40) ? -8'sd40 : adj_nxt[7:0];
+  end
+  assign st_w0_adj = w0_adj;
+  always_ff @(posedge clk) begin
+    if (rst) st_tau_q8 <= '0; else if (tau_valid) st_tau_q8 <= tau_q8;
+  end
   assign st_flags = flags_q;
   assign st_busy  = (cst != C_IDLE);
   assign st_pkt_count  = po_cnt;
@@ -291,7 +322,7 @@ module phy_rx_top
           fw_cnt <= '0; dec_done <= 1'b0;
           if (ev_valid) begin
             st_det_count <= st_det_count + 1'b1;
-            nbest_q <= ev_n_best; w0_q <= ev_n_best + 32'(W0_OFFSET); nwin_q <= cfg_nsyms + 8'd1;
+            nbest_q <= ev_n_best; w0_q <= ev_n_best + 32'(W0_OFFSET) + 32'($signed(w0_adj)); nwin_q <= cfg_nsyms + 8'd1;
             late_seen <= 1'b0;
             cfo_start <= 1'b1; cst <= C_CFO;
           end

@@ -66,7 +66,7 @@ class PythonRxBackend(RxBackend):
         return {"P": P, "R": Rr, "M": np.abs(P) ** 2 / np.maximum(Rr, 1e-12) ** 2}
 
     def _decode_words(self, words_per_sym) -> bytes:
-        nbytes = self.nsyms * R.BYTES_PER_SYM
+        nbytes = self.nsyms * R.bytes_per_sym(self.cfg)
         return bytes(int(b) for b in R.rx_fixed_ref.rx_decode(words_per_sym, nbytes))
 
     # ------------------------------------------------------------------ fixed-point (RTL model) receiver
@@ -84,6 +84,10 @@ class PythonRxBackend(RxBackend):
         events = sr.detect_events(di, dq, hold=int(rxc.get("hold", 9000)), rmin=int(rxc.get("rmin", 262144)))
         self.debug["events"] = []
         self.debug["packets"] = []
+        new = R.phy_code(self.cfg) == "ldpc"
+        ph = self.cfg.get("phy", {})
+        ft_en, tau_tgt = bool(ph.get("fine_timing", True)), int(ph.get("tau_target", 56))
+        adj = 0                                                   # fine timing loop state (RTL: w0_adj), carried from packet to packet
         for ev in events:
             inc = int(sr.cfo_inc(ev["p_re"], ev["p_im"]))
             ang = inc - (1 << 32) if inc >= (1 << 31) else inc
@@ -91,7 +95,8 @@ class PythonRxBackend(RxBackend):
             e = {"n_decl": ev["n_decl"], "n_best": ev["n_best"], "cfo_inc": inc, "cfo_hz_est": cfo_est,
                  "sync_start_est": ev["n_best"] - R.SYNC_PEAK_OFFSET}
             self.debug["events"].append(e)
-            w0 = ev["n_best"] + R.LTS_WINDOW_OFFSET
+            w0 = ev["n_best"] + R.LTS_WINDOW_OFFSET + (adj if (new and ft_en) else 0)
+            e["w0"] = w0
             n0 = min(ev["n_decl"] + 4, w0)             # NCO phase starts a few samples after the detection event
             end = w0 + (self.nsyms + 1) * P.SYMBOL_LEN
             if end - 0 > len(di):
@@ -100,10 +105,39 @@ class PythonRxBackend(RxBackend):
             yi, yq = rb.nco_mix(di[n0:], dq[n0:], inc)
             wins = [(yi[w0 - n0 + k2 * P.SYMBOL_LEN: w0 - n0 + k2 * P.SYMBOL_LEN + P.FFT_SIZE],
                      yq[w0 - n0 + k2 * P.SYMBOL_LEN: w0 - n0 + k2 * P.SYMBOL_LEN + P.FFT_SIZE]) for k2 in range(self.nsyms + 1)]
-            pk = self._fixed_packet(wins, rf)
+            pk = self._fixed_packet_v2(wins) if R.phy_code(self.cfg) == "ldpc" else self._fixed_packet(wins, rf)
             e["status"] = "ok"
+            if new and "tau_q8" in pk:
+                e["tau_est"] = pk["tau_q8"] / 256.0
+                if ft_en:
+                    adj = max(-40, min(40, adj + ((pk["tau_q8"] - tau_tgt * 256) >> 9)))
+                e["w0_adj"] = adj
             self.payloads.append(pk["bytes"])
             self.debug["packets"].append(pk)
+
+    def _fixed_packet_v2(self, wins) -> dict:
+        """New PHY: LTS channel estimate + guard-bin noise estimate -> MMSE/ZF post engine -> soft LLR -> LDPC (fixed-point models)."""
+        F, rf = R.phy2_fixed_ref, R.rx_fixed_ref
+        ph = self.cfg.get("phy", {})
+        yl = rf.rx_fft(*wins[0])
+        yd = [rf.rx_fft(*wins[k]) for k in range(1, self.nsyms + 1)]
+        llr, diag = F.receive_symbols(yl, yd, ph.get("eq", "mmse") == "mmse")
+        nbytes = self.nsyms * R.bytes_per_sym(self.cfg)
+        data, its, done = F.decode_llr(llr, self.nsyms, nbytes, int(ph.get("max_iter", 10)))
+        T = np.maximum(np.asarray(diag["T"], float), 1.0)
+        eq = np.array([(np.asarray(xr, float) + 1j * np.asarray(xi, float)) * 8192.0 / T for xr, xi in diag["eq"]])
+        yr, yi = rf.select_active(*yl)
+        mr, mi, E = rf.chest(yr, yi)
+        w = (mr.astype(np.float64) + 1j * mi) * 2.0 ** (-E.astype(np.float64))
+        tau_q8, _, _ = F.timing_est(yr, yi)
+        thr = int(round(float(ph.get("bad_snr_db", 10.0)) / 0.0941))
+        avg, mn, bad = F.quality_codes(diag["lgm"], diag["lgnu"], diag["sig_sum"], thr)
+        snr_k = np.clip(diag["lgm"] - diag["lgnu"], F.D_MIN, F.D_MAX) * (3.0103 / F.LGF)
+        return {"bytes": data, "eq": eq, "angles": np.array(diag["angles"]), "w": w, "H_est": 1.0 / w, "E": E,
+                "fft_lts": rf.select_active(*yl), "ldpc_iterations": [int(v) for v in its], "ldpc_failures": int((~done).sum()),
+                "ldpc_codewords": int(len(its)), "snr_avg_db": avg * 3.0103 / F.LGF, "snr_min_db": mn * 3.0103 / F.LGF,
+                "bad_subcarriers": bad, "snr_k_db": snr_k, "noise_code": int(diag["lgnu"]), "tau_q8": int(tau_q8),
+                "sfo_slopes": [int(v) for v in diag["slopes"]], "angles_raw": [int(v) for v in diag["angles"]]}
 
     def _fixed_packet(self, wins, rf) -> dict:
         yr, yi_ = rf.select_active(*rf.rx_fft(*wins[0]))

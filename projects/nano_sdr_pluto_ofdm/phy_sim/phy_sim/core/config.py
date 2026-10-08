@@ -28,6 +28,8 @@ DEFAULTS: dict[str, Any] = {
         "adc": {"enabled": True, "bits": 12, "rms": 600.0, "clip": True,
                 "dc_offset_i": 0.0, "dc_offset_q": 0.0},
     },
+    "phy": {"mode": "current",                                # current (16-QAM, ZF, hard decision) | new (LDPC R=5/6 + soft LLR + MMSE)
+            "eq": "mmse", "max_iter": 10, "bad_snr_db": 10.0},
     "rtl": {"vivado_dir": None, "workdir": None, "keep_work": False, "debug": True},
     "criteria": {},
     "report": {"plots": True, "html": True},

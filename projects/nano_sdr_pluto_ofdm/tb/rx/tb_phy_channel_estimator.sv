@@ -9,7 +9,7 @@ module tb_phy_channel_estimator;
   logic [34:0] stim [MAXN];
   logic [39:0] expd [NA];
   logic [11:0] expl [NA];
-  logic [41:0] sig_sum; logic [41:0] expsum [1];
+  logic [41:0] sig_sum; logic [41:0] expsum [1]; logic tau_valid; logic signed [19:0] tau_q8; logic [19:0] exptau [1]; int ntau = 0;
   logic [10:0] eng_ra = 0; logic [39:0] eng_rw; logic signed [11:0] eng_rlg; logic eng_we = 0; logic [10:0] eng_wa = 0; logic [39:0] eng_wd = 0;
   logic in_valid = 0, in_first = 0, in_last = 0; logic signed [15:0] in_re = 0, in_im = 0;
   logic done, rd_en = 0; logic [10:0] rd_addr = 0; logic [39:0] rd_data;
@@ -18,6 +18,10 @@ module tb_phy_channel_estimator;
   int errors = 0, ns = 0, ndone = 0;
   bit checking = 0;
   always @(posedge clk) if (checking && done) ndone++;
+  always @(posedge clk) if (checking && tau_valid) begin
+    ntau++;
+    if (tau_q8 !== $signed(exptau[0])) begin errors++; $display("tau got %0d exp %0d", tau_q8, $signed(exptau[0])); end
+  end
 
   task automatic play(input int count);
     for (int i = 0; i < count; i++) begin
@@ -48,6 +52,7 @@ module tb_phy_channel_estimator;
     $readmemh("vec/cest_exp.mem", expd);
     $readmemh("vec/cest_lg.mem", expl);
     $readmemh("vec/cest_sum.mem", expsum);
+    $readmemh("vec/cest_tau.mem", exptau);
     while (^stim[ns] !== 1'bx) ns++;
     repeat (4) @(posedge clk); #1; rst = 0; repeat (2) @(posedge clk);
     // reset in the middle of a frame
@@ -69,6 +74,7 @@ module tb_phy_channel_estimator;
     @(posedge clk); #1; rd_en = 1; rd_addr = 11'd777; eng_ra = 11'd777; @(posedge clk); #1; rd_en = 0;
     @(posedge clk); #1;
     if (rd_data !== 40'hA5_1234_5678 || eng_rw !== 40'hA5_1234_5678) begin errors++; $display("engine write failed %010x %010x", rd_data, eng_rw); end
+    if (ntau !== 2) begin errors++; $display("tau pulses %0d (exp 2)", ntau); end
     if (errors == 0) $display("TEST PASSED tb_phy_channel_estimator (%0d bins x 2)", NA);
     else $display("TEST FAILED tb_phy_channel_estimator errors=%0d", errors);
     $finish;

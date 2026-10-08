@@ -8,8 +8,8 @@ module tb_phy_tx_axis_top;
   logic clk = 0, aclk = 0, rst = 1, aresetn = 0;
   always #5 clk = ~clk;
   always #6.5 aclk = ~aclk;
-  logic [7:0]  pkt0 [1100];
-  logic [7:0]  pkt1 [700];
+  logic [7:0]  pkt0 [900];
+  logic [7:0]  pkt1 [500];
   logic [31:0] exp0 [NA];
   logic [31:0] exp1 [NB];
   logic s_axis_valid = 0, s_axis_ready, s_axis_last = 0; logic [63:0] s_axis_data = 0;
@@ -52,7 +52,7 @@ module tb_phy_tx_axis_top;
   endtask
   task automatic dma_packet(input int which, input bit bad_magic);
     int n; logic [63:0] w;
-    n = which ? 700 : 1100;
+    n = which ? 500 : 900;
     send_beat({bad_magic ? 32'h12345678 : 32'h4F465458, 16'h0, 16'(n)}, 1'b0);
     for (int b = 0; b < n; b += 8) begin
       for (int k = 0; k < 8; k++) w[8*k +: 8] = (b + k < n) ? (which ? pkt1[b + k] : pkt0[b + k]) : 8'hEE;
@@ -83,10 +83,10 @@ module tb_phy_tx_axis_top;
   logic [31:0] v;
   int t0;
   initial begin
-    $readmemh("vec/txt_pkt0_in.mem", pkt0);
-    $readmemh("vec/txt_pkt1_in.mem", pkt1);
-    $readmemh("vec/txt_pkt0_exp.mem", exp0);
-    $readmemh("vec/txt_pkt1_exp.mem", exp1);
+    $readmemh("vec/txc_pkt0_in.mem", pkt0);
+    $readmemh("vec/txc_pkt1_in.mem", pkt1);
+    $readmemh("vec/txc_pkt0_exp.mem", exp0);
+    $readmemh("vec/txc_pkt1_exp.mem", exp1);
     repeat (6) @(posedge clk); rst = 0; repeat (4) @(posedge aclk); aresetn = 1; repeat (4) @(posedge clk);
     axi_read(12'h000, v); if (v !== 32'h4F465458) begin errors++; $display("ID %08x", v); end
     axi_read(12'h010, v); if (v[15:0] !== 16'd16384) begin errors++; $display("gain reset %0d", v); end
@@ -111,8 +111,8 @@ module tb_phy_tx_axis_top;
     if (w[0][15:0] !== 2 || w[0][31:16] !== 2) begin errors++; $display("accepted/done %0d/%0d", w[0][15:0], w[0][31:16]); end
     if (w[2][31:16] !== 1) begin errors++; $display("bad headers %0d", w[2][31:16]); end
     if (w[2][15:0] !== 0 || w[1] !== 0) begin errors++; $display("underflow/overflow/trunc %08x %08x", w[2], w[1]); end
-    if (w[15] !== 88) begin errors++; $display("dropped beats %0d (exp 88)", w[15]); end
-    if (w[8] !== 1 + 138 + 1 + 88 + 1 + 88) begin errors++; $display("beats %0d", w[8]); end
+    if (w[15] !== 63) begin errors++; $display("dropped beats %0d (exp 63)", w[15]); end
+    if (w[8] !== 1 + 113 + 1 + 63 + 1 + 63) begin errors++; $display("beats %0d", w[8]); end
     if (w[6] !== NA + NB) begin errors++; $display("active samples %0d != %0d", w[6], NA + NB); end
     if (w[7][15:0] == 0 || w[7][31:16] == 0) begin errors++; $display("output peak %08x", w[7]); end
     if (w[3] < w[6] || w[4] < 2 * w[3] - 4) begin errors++; $display("sample/clk counters %0d %0d", w[3], w[4]); end

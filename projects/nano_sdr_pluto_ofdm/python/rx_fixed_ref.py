@@ -111,6 +111,38 @@ def cpe_track(xr, xi):
     return yr, yi, ang
 
 
+# ------------------------------------------------------------------ common phase + SFO slope tracking (pilots)
+import math as _math
+# frequency index of the stream slot s: +1..+600 for s < 600, -600..-1 for s >= 600 (stream order = FFT bin order of the active bins)
+FREQ_S = np.array([(sl + 1) if sl < NUM_ACTIVE_SC // 2 else (sl - NUM_ACTIVE_SC) for sl in range(NUM_ACTIVE_SC)], dtype=np.int64)
+FREQ_P = FREQ_S[PILOT_S]
+SFO_SUMF2 = int(np.sum(FREQ_P * FREQ_P))
+SFO_KB_Q16 = int(round(2 ** 32 / (2 * _math.pi * A_LTS * SFO_SUMF2) * 65536 * 16))     # x16: the sum M is divided by 16 (scaling) before the product
+
+
+def cpe_sfo_track(xr, xi):
+    """Like cpe_track() but also fits the phase slope across frequency over the pilots (sampling frequency offset / drift of the timing):
+       theta = angle(sum z_p), z_p = X_p * sigma_p ;  M = sum f_p z_p (f_p = frequency index of the pilot) ;
+       s = Im(M e^{-j theta}) / (A sum f^2) (rad per bin) ; every data/pilot bin with frequency index f is rotated by exp(-j (theta + s f))
+       (32 bit phase accumulator, 12 bit sin/cos table).  Returns (yr, yi, ang, s_units) with s in 2^32 = 2 pi units per bin.
+       Golden for phy_phase_tracker (slope mode)."""
+    sg = pilot_sign()
+    zr = xr[PILOT_S] * sg
+    zi = xi[PILOT_S] * sg
+    ar, ai = int(np.sum(zr)), int(np.sum(zi))
+    ang = sync_ref.cordic_vec(*_norm17(ar, ai))
+    c, s = rx_blocks_ref.nco_cs(np.array([(-ang) & 0xFFFFFFFF]))
+    c, s = int(c[0]), int(s[0])
+    mr, mi = int(np.sum(FREQ_P * zr)), int(np.sum(FREQ_P * zi))
+    im = (mi * c + mr * s) >> 15                      # Im(M e^{-j theta})
+    sbin = (im * SFO_KB_Q16) >> 20                    # angle units per bin
+    rho = ((-ang - FREQ_S * sbin) & 0xFFFFFFFF).astype(np.int64)
+    ck, sk = rx_blocks_ref.nco_cs(rho)
+    yr = sat16((xr * ck - xi * sk + 16384) >> 15)
+    yi = sat16((xr * sk + xi * ck + 16384) >> 15)
+    return yr, yi, ang, sbin
+
+
 def cpe_track_l1(xr, xi):
     """cpe_track() plus the pilot error: l1 = sum over the pilots of |Re(Y_p) - sigma_p*A| + |Im(Y_p)| after the rotation
     (Y = rotated pilot, sigma_p = pilot sign, A = PILOT_AMP).  Golden for the l1 output of phy_phase_tracker."""
