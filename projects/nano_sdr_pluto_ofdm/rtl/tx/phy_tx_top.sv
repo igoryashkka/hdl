@@ -13,7 +13,8 @@ module phy_tx_top
   import phy_pkg::*;
 #(
   parameter int MAX_SYMS   = TX_MAX_SYMS,
-  parameter int SHIFT_MASK = 32'h0FF
+  parameter int SHIFT_MASK = 32'h0FF,
+  parameter bit CODED      = 1'b0            // 1: LDPC R=5/6 (450 payload bytes per OFDM symbol), 0: uncoded (550)
 ) (
   input  logic                   clk,
   input  logic                   rst,
@@ -35,6 +36,7 @@ module phy_tx_top
   output logic                   pkt_done,
   output logic                   busy
 );
+  localparam int BPS       = CODED ? 450 : BYTES_PER_OFDM;     // payload bytes per OFDM symbol
   localparam int BUF_BYTES = MAX_SYMS * BYTES_PER_OFDM;
   localparam int BAW       = $clog2(BUF_BYTES);
 
@@ -61,7 +63,7 @@ module phy_tx_top
       pkt_valid <= 1'b0; pkt_trunc <= 1'b0;
     end else begin
       if (wr_en) begin
-        if (sym_byte_cnt == 10'(BYTES_PER_OFDM - 1)) begin sym_byte_cnt <= '0; nsyms_acc <= nsyms_acc + 1'b1; end
+        if (sym_byte_cnt == 10'(BPS - 1)) begin sym_byte_cnt <= '0; nsyms_acc <= nsyms_acc + 1'b1; end
         else sym_byte_cnt <= sym_byte_cnt + 1'b1;
         if (wr_end) begin
           pkt_len   <= (BAW+1)'(wr_ptr) + 1'b1;
@@ -114,7 +116,7 @@ module phy_tx_top
         pkt_taken   <= 1'b1;
         rd_busy     <= 1'b1;
         rd_idx      <= '0;
-        total_bytes <= (BAW+1)'(pkt_nsyms) * (BAW+1)'(BYTES_PER_OFDM);
+        total_bytes <= (BAW+1)'(pkt_nsyms) * (BAW+1)'(BPS);
       end
       a_v <= rd_issue;
       if (rd_issue) begin
@@ -141,14 +143,30 @@ module phy_tx_top
     .rd_valid(bf_rd_valid), .rd_ready(bf_rd_ready), .rd_data(bf_rd_data), .count(bf_count)
   );
 
-  // ===================================================================== nibble serializer -> interleaver
-  logic       nib_phase, il_in_ready;
-  wire        il_in_valid = bf_rd_valid;
-  wire [3:0]  il_in_data  = nib_phase ? bf_rd_data[3:0] : bf_rd_data[7:4];
-  assign bf_rd_ready = il_in_ready & nib_phase;
-  always_ff @(posedge clk) begin
-    if (rst) nib_phase <= 1'b0;
-    else if (il_in_valid && il_in_ready) nib_phase <= ~nib_phase;
+  // ===================================================================== nibble source -> interleaver
+  logic       il_in_ready;
+  logic       il_in_valid;
+  logic [3:0] il_in_data;
+  if (CODED) begin : g_coded
+    // bytes -> LDPC encoder (225 bytes per codeword, 2 codewords + 20 filler nibbles per OFDM symbol) -> nibbles
+    logic       enc_in_ready, enc_out_valid;
+    logic [3:0] enc_out_data;
+    phy_ldpc_enc #(.CW_PER_SYM(2), .FILL_NIBBLES(20)) u_enc (
+      .clk, .rst, .in_valid(bf_rd_valid), .in_ready(enc_in_ready), .in_data(bf_rd_data),
+      .out_valid(enc_out_valid), .out_ready(il_in_ready), .out_data(enc_out_data)
+    );
+    assign bf_rd_ready = enc_in_ready;
+    assign il_in_valid = enc_out_valid;
+    assign il_in_data  = enc_out_data;
+  end else begin : g_uncoded
+    logic nib_phase;
+    assign il_in_valid = bf_rd_valid;
+    assign il_in_data  = nib_phase ? bf_rd_data[3:0] : bf_rd_data[7:4];
+    assign bf_rd_ready = il_in_ready & nib_phase;
+    always_ff @(posedge clk) begin
+      if (rst) nib_phase <= 1'b0;
+      else if (il_in_valid && il_in_ready) nib_phase <= ~nib_phase;
+    end
   end
 
   logic       il_out_valid, il_out_ready, il_first, il_last;

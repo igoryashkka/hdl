@@ -13,7 +13,7 @@ DEFAULTS: dict[str, Any] = {
     "payload": {"nsyms": 2, "pattern": "random"},             # nsyms x 550 bytes per packet (PHY frame granularity)
     "tx": {"backend": "python", "gain": 16384},                # Q2.14, 16384 = 1.0
     "rx": {"backend": "python", "mode": "fixed",               # python modes: fixed (bit-exact RTL model) | float
-           "rmin": 262144, "gain_sh": 0, "dc_k": 12, "hold": 9000},
+           "rmin": 262144, "gain_sh": 0, "dc_k": 16, "hold": 9000},
     "channel": {                                              # every impairment is optional
         "snr_db": None, "snr_definition": "sample",            # sample | esn0 | ebn0
         "cfo_hz": 0.0, "sfo_ppm": 0.0, "phase0_deg": 0.0,

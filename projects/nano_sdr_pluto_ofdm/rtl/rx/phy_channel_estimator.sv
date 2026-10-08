@@ -29,7 +29,8 @@ module phy_channel_estimator
   output logic signed [11:0]     eng_rlg,
   input  logic                   eng_we,
   input  logic [10:0]            eng_wa,
-  input  logic [39:0]            eng_wd
+  input  logic [39:0]            eng_wd,
+  output logic [41:0]            sig_sum        // sum of |G|^2 over the bins of the frame (valid at `done`)
 );
   localparam int NA = NUM_ACTIVE_SC;
 
@@ -39,13 +40,13 @@ module phy_channel_estimator
   wire  [14:0]  lf_cur = in_first ? LTS_SEED : lfsr;
   wire          sig    = lf_cur[14] ^ lf_cur[13];
   wire  [10:0]  s_cur  = in_first ? 11'd0 : scnt;
-  logic         va, la, sa;
+  logic         va, la, sa, fa;
   logic [10:0]  aa;
   logic signed [IQ_W-1:0] ya_r, ya_i;
   always_ff @(posedge clk) begin
-    if (rst) begin lfsr <= LTS_SEED; scnt <= '0; va <= 1'b0; la <= 1'b0; end
+    if (rst) begin lfsr <= LTS_SEED; scnt <= '0; va <= 1'b0; la <= 1'b0; fa <= 1'b0; end
     else begin
-      va <= in_valid; la <= in_valid & in_last;
+      va <= in_valid; la <= in_valid & in_last; fa <= in_valid & in_first;
       if (in_valid) begin lfsr <= {lf_cur[13:0], sig}; scnt <= s_cur + 1'b1; end
     end
     if (in_valid) begin ya_r <= in_re; ya_i <= in_im; sa <= sig; aa <= s_cur; end
@@ -59,11 +60,12 @@ module phy_channel_estimator
     else if (t < -17'sd32767) return -16'sd32767;
     else return t[IQ_W-1:0];
   endfunction
-  logic vb, lb;
+  logic vb, lb, fb, fc, fd;
   logic [10:0] ab;
   logic signed [IQ_W-1:0] gr_b, gi_b;
   always_ff @(posedge clk) begin
     if (rst) begin vb <= 1'b0; lb <= 1'b0; end else begin vb <= va; lb <= la; end
+    fb <= fa;
     gr_b <= sgn_sat(ya_r, sa); gi_b <= sgn_sat(ya_i, sa); ab <= aa;
   end
 
@@ -71,12 +73,18 @@ module phy_channel_estimator
   logic vc, lc; logic [10:0] ac; logic signed [IQ_W-1:0] gr_c, gi_c; logic [31:0] sq_r, sq_i;
   always_ff @(posedge clk) begin
     if (rst) begin vc <= 1'b0; lc <= 1'b0; end else begin vc <= vb; lc <= lb; end
+    fc <= fb;
     sq_r <= 32'(gr_b) * 32'(gr_b); sq_i <= 32'(gi_b) * 32'(gi_b); gr_c <= gr_b; gi_c <= gi_b; ac <= ab;
   end
   logic vd, ld; logic [10:0] ad; logic signed [IQ_W-1:0] gr_d, gi_d; logic [31:0] m_d;
   always_ff @(posedge clk) begin
     if (rst) begin vd <= 1'b0; ld <= 1'b0; end else begin vd <= vc; ld <= lc; end
-    m_d <= sq_r + sq_i; gr_d <= gr_c; gi_d <= gi_c; ad <= ac;
+    m_d <= sq_r + sq_i; gr_d <= gr_c; gi_d <= gi_c; ad <= ac; fd <= fc;
+  end
+  // sum of |G|^2 (stage D, cleared by the first bin of the frame)
+  always_ff @(posedge clk) begin
+    if (rst) sig_sum <= '0;
+    else if (vd) sig_sum <= (fd ? 42'd0 : sig_sum) + 42'(m_d);
   end
 
   // ---------------------------------------------------------------- E: leading one position ; F: normalise

@@ -78,7 +78,7 @@ class PythonRxBackend(RxBackend):
         sh = int(rxc.get("gain_sh", 0))
         if sh:
             i = np.array(rb.input_scale(i, sh)); q = np.array(rb.input_scale(q, sh))
-        k = int(rxc.get("dc_k", 12))
+        k = int(rxc.get("dc_k", 16))
         di = np.array(rb.dc_remove(i, k), dtype=np.int64)
         dq = np.array(rb.dc_remove(q, k), dtype=np.int64)
         events = sr.detect_events(di, dq, hold=int(rxc.get("hold", 9000)), rmin=int(rxc.get("rmin", 262144)))

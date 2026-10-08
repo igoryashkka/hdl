@@ -16,13 +16,17 @@ module phy_rx_top
   parameter int W0_OFFSET     = 104,
   parameter int WATCHDOG_BITS = 24,
   parameter int FFT_MASK      = 32'h00F,
-  parameter int DC_K          = 12            // DC canceller time constant 2^K samples (K=10 hurts bin 1 next to DC)
+  parameter int DC_K          = 16,           // DC canceller time constant 2^K samples (K=12 left a 1-bit error at the band edge for CFO > 6 kHz, see phy_sim study)
+  parameter bit CODED         = 1'b0          // 1: LDPC R=5/6 + soft LLR + MMSE post engine (450 bytes / symbol), 0: uncoded hard decision (550)
 ) (
   input  logic                   clk,
   input  logic                   rst,
   input  logic [7:0]             cfg_nsyms,
   input  logic [31:0]            cfg_rmin,
   input  logic signed [3:0]      cfg_gain_sh,
+  input  logic                   cfg_mmse,         // coded mode: 1 = MMSE, 0 = ZF
+  input  logic [4:0]             cfg_max_iter,     // coded mode: LDPC iteration limit
+  input  logic signed [12:0]     cfg_bad_thr,      // bad-subcarrier threshold (SNR code, 106 = 10 dB)
   input  logic                   in_valid,
   input  logic signed [IQ_W-1:0] in_i,
   input  logic signed [IQ_W-1:0] in_q,
@@ -42,7 +46,16 @@ module phy_rx_top
   output logic [31:0]            st_nbest,
   output logic [15:0]            st_angle,
   output logic [15:0]            st_seq,
-  output logic                   st_pkt_pulse     // one clk pulse when a packet record is committed
+  output logic                   st_pkt_pulse,    // one clk pulse when a packet record is committed
+  output logic [15:0]            st_snr_avg,      // last packet: channel quality codes (log2 * 32), coded mode only
+  output logic [15:0]            st_snr_min,
+  output logic [15:0]            st_bad,
+  output logic [15:0]            st_noise,
+  output logic [7:0]             st_ldpc_fail,
+  output logic [4:0]             st_ldpc_imax,
+  output logic [11:0]            st_ldpc_isum,
+  output logic [15:0]            st_cw_count,     // decoded codewords / non-converged codewords since reset
+  output logic [15:0]            st_cwfail_count
 );
   // ===================================================================== front end
   logic sv_i, sv_q; logic signed [IQ_W-1:0] si, sq;
@@ -116,10 +129,35 @@ module phy_rx_top
   );
 
   logic ce_done; logic [10:0] eq_addr; logic [39:0] w_data;
+  logic [10:0] eg_ra, eg_wa; logic [39:0] eg_rw, eg_wd; logic signed [11:0] eg_rlg; logic eg_we; logic [41:0] sig_sum;
   phy_channel_estimator u_chest (
     .clk, .rst(rst | be_rst), .in_valid(bs_valid & lts_q), .in_first(bs_first), .in_last(bs_last), .in_re(bs_re), .in_im(bs_im),
-    .done(ce_done), .rd_en(1'b1), .rd_addr(eq_addr), .rd_data(w_data)
+    .done(ce_done), .rd_en(1'b1), .rd_addr(eq_addr), .rd_data(w_data),
+    .eng_ra(eg_ra), .eng_rw(eg_rw), .eng_rlg(eg_rlg), .eng_we(eg_we), .eng_wa(eg_wa), .eng_wd(eg_wd), .sig_sum(sig_sum)
   );
+
+  // coded mode: noise estimate (guard bins of the LTS FFT frame) + MMSE post engine (weights, LLR parameters, channel quality)
+  logic [10:0] prm_ra; logic [28:0] prm_rd; logic prm_ready;
+  logic q_valid; logic signed [12:0] q_avg, q_min, nu_code; logic [10:0] q_bad;
+  if (CODED) begin : g_soft
+    logic nu_valid; logic signed [12:0] lg_nu; logic [40:0] nse_sum;
+    phy_noise_est u_nse (
+      .clk, .rst(rst | be_rst), .en(lts_cur), .in_valid(f_valid), .in_first(f_first), .in_re(f_re), .in_im(f_im),
+      .nu_valid, .lg_nu, .noise_sum(nse_sum)
+    );
+    logic busy_unused;
+    phy_mmse_post u_post (
+      .clk, .rst(rst | be_rst), .clr(arm_valid), .cfg_mmse, .chest_done(ce_done), .nu_valid, .lg_nu,
+      .eng_ra(eg_ra), .eng_rw(eg_rw), .eng_rlg(eg_rlg), .eng_we(eg_we), .eng_wa(eg_wa), .eng_wd(eg_wd),
+      .prm_ra, .prm_rd, .ready(prm_ready), .busy(busy_unused),
+      .sig_sum, .cfg_bad_thr, .q_valid, .q_snr_avg(q_avg), .q_snr_min(q_min), .q_bad
+    );
+    always_ff @(posedge clk) if (nu_valid) nu_code <= lg_nu;
+  end else begin : g_nosoft
+    assign eg_ra = '0; assign eg_we = 1'b0; assign eg_wa = '0; assign eg_wd = '0;
+    assign prm_rd = '0; assign prm_ready = 1'b1; assign q_valid = 1'b0; assign q_avg = '0; assign q_min = '0; assign q_bad = '0;
+    assign nu_code = '0;
+  end
 
   logic eq_valid, eq_first, eq_last;
   logic signed [IQ_W-1:0] eq_re, eq_im;
@@ -157,10 +195,41 @@ module phy_rx_top
   end
 
   logic dc_valid, dc_first, dc_last, il_ovf; logic [7:0] dc_data;
-  phy_rx_decode u_dec (
-    .clk, .rst(rst | be_rst), .nsyms(cfg_nsyms), .in_valid(pt_valid), .in_first(pt_first), .in_last(pt_last), .in_re(pt_re), .in_im(pt_im),
-    .out_valid(dc_valid), .out_first(dc_first), .out_last(dc_last), .out_data(dc_data), .il_overflow(il_ovf)
-  );
+  logic ld_stat_valid, cw_pulse, cw_fail_pulse; logic [7:0] ld_fail; logic [4:0] ld_imax; logic [11:0] ld_isum;
+  if (CODED) begin : g_dec_ldpc
+    phy_rx_decode_ldpc u_dec (
+      .clk, .rst(rst | be_rst), .nsyms(cfg_nsyms), .cfg_max_iter, .in_valid(pt_valid), .in_first(pt_first), .in_last(pt_last),
+      .in_re(pt_re), .in_im(pt_im), .prm_ra, .prm_rd,
+      .out_valid(dc_valid), .out_first(dc_first), .out_last(dc_last), .out_data(dc_data), .il_overflow(il_ovf),
+      .stat_valid(ld_stat_valid), .stat_fail(ld_fail), .stat_iter_max(ld_imax), .stat_iter_sum(ld_isum),
+      .cw_pulse, .cw_fail_pulse
+    );
+  end else begin : g_dec_hard
+    phy_rx_decode u_dec (
+      .clk, .rst(rst | be_rst), .nsyms(cfg_nsyms), .in_valid(pt_valid), .in_first(pt_first), .in_last(pt_last), .in_re(pt_re), .in_im(pt_im),
+      .out_valid(dc_valid), .out_first(dc_first), .out_last(dc_last), .out_data(dc_data), .il_overflow(il_ovf)
+    );
+    assign prm_ra = '0; assign ld_stat_valid = 1'b0; assign ld_fail = '0; assign ld_imax = '0; assign ld_isum = '0;
+    assign cw_pulse = 1'b0; assign cw_fail_pulse = 1'b0;
+  end
+
+  // quality / LDPC statistics of the last packet (held until the next one)
+  logic prm_late;
+  logic [7:0] fail_l; logic [4:0] imax_l; logic [11:0] isum_l;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      st_snr_avg <= '0; st_snr_min <= '0; st_bad <= '0; st_noise <= '0; fail_l <= '0; imax_l <= '0; isum_l <= '0;
+      st_cw_count <= '0; st_cwfail_count <= '0; prm_late <= 1'b0;
+    end else begin
+      if (arm_valid) prm_late <= 1'b0;
+      else if (pt_valid && pt_first && !prm_ready) prm_late <= 1'b1;
+      if (q_valid) begin st_snr_avg <= 16'(q_avg); st_snr_min <= 16'(q_min); st_bad <= 16'(q_bad); st_noise <= 16'(nu_code); end
+      if (ld_stat_valid) begin fail_l <= ld_fail; imax_l <= ld_imax; isum_l <= ld_isum; end
+      if (cw_pulse) st_cw_count <= st_cw_count + 1'b1;
+      if (cw_fail_pulse) st_cwfail_count <= st_cwfail_count + 1'b1;
+    end
+  end
+  assign st_ldpc_fail = fail_l; assign st_ldpc_imax = imax_l; assign st_ldpc_isum = isum_l;
 
   // ===================================================================== byte buffer + packet output
   logic [12:0] wr_addr;
@@ -175,10 +244,12 @@ module phy_rx_top
   logic [15:0] po_drop, po_cnt;
   logic [7:0]  flags_q;
   logic        late_seen;
-  wire  [15:0] nbytes_total = 16'(cfg_nsyms) * 16'(BYTES_PER_OFDM);
-  phy_rx_pkt_out #(.RAM_BYTES(MAX_SYMS * BYTES_PER_OFDM)) u_pkt (
+  wire  [15:0] nbytes_total = 16'(cfg_nsyms) * 16'(CODED ? 450 : BYTES_PER_OFDM);
+  wire [63:0] hdr_b3 = {st_snr_avg, st_snr_min, st_bad, st_noise};
+  wire [63:0] hdr_b4 = {fail_l, 3'b0, imax_l, 4'b0, isum_l, 6'b0, cfg_mmse, CODED, 24'd0};
+  phy_rx_pkt_out #(.RAM_BYTES(MAX_SYMS * BYTES_PER_OFDM), .HDR_V3(CODED)) u_pkt (
     .clk, .rst, .wr_en(dc_valid), .wr_addr(wr_addr_cur), .wr_data(dc_data),
-    .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle), .c_rssi(rssi_q), .c_evm(evm_acc),
+    .commit(dc_valid & dc_last), .c_nbytes(nbytes_total), .c_flags(flags_q), .c_cfo_inc(nco_inc), .c_nbest(nbest_q), .c_angle(last_angle), .c_rssi(rssi_q), .c_evm(evm_acc), .c_b3(hdr_b3), .c_b4(hdr_b4),
     .busy(po_busy), .dropped(po_drop), .pkt_count(po_cnt),
     .m_axis_valid, .m_axis_ready, .m_axis_data, .m_axis_last
   );
@@ -192,7 +263,7 @@ module phy_rx_top
   logic [2:0]  rst_cnt;
   logic        wd_hit;
 
-  assign flags_q = {4'b0, late_seen, fft_overflow, pt_overrun, il_ovf};
+  assign flags_q = {2'b0, (fail_l != 8'd0), prm_late, late_seen, fft_overflow, pt_overrun, il_ovf};
   assign st_flags = flags_q;
   assign st_busy  = (cst != C_IDLE);
   assign st_pkt_count  = po_cnt;

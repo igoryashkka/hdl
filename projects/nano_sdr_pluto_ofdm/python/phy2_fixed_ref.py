@@ -62,17 +62,36 @@ def _idx(d: int) -> int:
 # ------------------------------------------------------------------ per-bin side information from the LTS
 def chest_lg(yr, yi):
     """lg(|G|^2) code per active bin (G = Y*sigma, saturated like chest_one)."""
+    return chest_lg_sum(yr, yi)[0]
+
+
+def chest_lg_sum(yr, yi):
+    """(lg codes, sum of |G|^2 over the bins)."""
     sg = rf.lts_sign()
-    out = []
+    out, tot = [], 0
     for a, b, s in zip(yr, yi, sg):
         gr, gi = max(-32767, min(32767, int(a) * int(s))), max(-32767, min(32767, int(b) * int(s)))
-        out.append(lgcode(gr * gr + gi * gi))
-    return np.array(out, dtype=np.int64)
+        m = gr * gr + gi * gi
+        tot += m
+        out.append(lgcode(m))
+    return np.array(out, dtype=np.int64), tot
 
 
 def noise_code(yfull_r, yfull_i) -> int:
     s = int(np.sum(np.asarray(yfull_r)[GUARD].astype(np.int64) ** 2 + np.asarray(yfull_i)[GUARD].astype(np.int64) ** 2))
     return lgcode(s) + CNU, s
+
+
+LG_NSC = int(round(LGF * math.log2(NUM_ACTIVE_SC)))      # log code of the number of active bins (mean of the |G|^2 sum)
+BAD_D = 106                                              # default "bad subcarrier" threshold: 10 dB = 3.32 octaves * 32
+
+
+def quality_codes(lgm, lgnu, sig_sum, bad_thr=BAD_D):
+    """(snr_avg_code, snr_min_code, bad_count): per-bin SNR code d = lg|G|^2 - lg nu; the average from the linear |G|^2 sum.
+    Codes are in 1/32 octave: dB = code * 3.0103 / 32."""
+    d = np.clip(np.asarray(lgm, np.int64) - int(lgnu), D_MIN, D_MAX)
+    snr_avg = lgcode(int(sig_sum)) - LG_NSC - int(lgnu)
+    return int(snr_avg), int(d.min()), int((d < bad_thr).sum())
 
 
 def post_engine(mr, mi, E, lgm, lgnu, mmse: bool):
@@ -116,17 +135,31 @@ def receive_symbols(y_lts_full, y_data_full, mmse=True):
     """y_*_full: integer (re, im) arrays of 2048 bins (rx_fft outputs). Returns (llr (nsym, 1100, 4), diagnostics)."""
     yr, yi = rf.select_active(*y_lts_full)
     mr, mi, E = rf.chest(yr, yi)
-    lgm = chest_lg(yr, yi)
+    lgm, sig_sum = chest_lg_sum(yr, yi)
     lgnu, S = noise_code(*y_lts_full)
     mr2, mi2, T, gm, ge = post_engine(mr, mi, E, lgm, lgnu, mmse)
     ds = rf.DATA_S
     llrs = []
     angs = []
+    eqs = []
     for yfr, yfi in y_data_full:
         dr, di = rf.select_active(yfr, yfi)
         xr, xi = rf.equalize(dr, di, mr2, mi2, E)
         xr, xi, ang = rf.cpe_track(xr, xi)
         angs.append(ang)
+        eqs.append((xr[ds].copy(), xi[ds].copy()))
         llrs.append(demap_soft(xr[ds], xi[ds], T[ds], gm[ds], ge[ds]))
-    diag = {"lgm": lgm, "lgnu": lgnu, "noise_sum": S, "angles": angs}
+    diag = {"lgm": lgm, "lgnu": lgnu, "noise_sum": S, "sig_sum": sig_sum, "quality": quality_codes(lgm, lgnu, sig_sum), "angles": angs, "eq": eqs, "T": T[ds], "gm": gm[ds], "ge": ge[ds]}
     return np.array(llrs), diag
+
+
+def decode_llr(llr, nsym, nbytes, iters=10):
+    """llr (nsym, 1100, 4) ints -> payload bytes (descrambled), iterations per codeword, converged flags (fixed-point LDPC)."""
+    import phy2_ref as P
+    import ldpc_fixed_ref as lf
+    import scrambler_ref
+    deint = P.deinterleave_llr(np.asarray(llr, dtype=float))
+    cw = np.rint(deint[:, :P.CODED_BITS]).astype(np.int64).reshape(nsym * P.CW_PER_SYM, P.CODE_N)
+    hard, its, done = lf.decode(np.clip(cw, -31, 31), iters)
+    raw = scrambler_ref.scramble([int(b) for b in np.packbits(hard[:, :P.CODE_K].reshape(-1))])
+    return bytes(raw[:nbytes]), its, done

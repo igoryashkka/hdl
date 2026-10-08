@@ -42,18 +42,25 @@ def tx_data_symbols(payload):
     return (iq[:, 0] + 1j * iq[:, 1]).reshape(nsym, NUM_DATA_SC), words
 
 
-def tx_frame(payload, gain=16384, mask=0x0FF):
-    """Whole TX chain (uncoded mode): bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top."""
+def tx_frame(payload, gain=16384, mask=0x0FF, code="none"):
+    """Whole TX chain: bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top (code = "none" uncoded, 550 bytes per
+    symbol; "ldpc" LDPC R=5/6, 450 bytes per symbol, python/phy2_ref.tx_words)."""
     import scrambler_ref, interleaver_ref, qam_ref, ofdm_ref
     from phy_params import BYTES_PER_OFDM, NUM_DATA_SC, FFT_SIZE, CP_LEN
     n_log = FFT_SIZE.bit_length() - 1
-    nsym = -(-len(payload) // BYTES_PER_OFDM)
-    data = list(payload) + [0] * (nsym * BYTES_PER_OFDM - len(payload))
-    sc = scrambler_ref.scramble(data)
-    words = []
-    for b in sc:
-        words += [b >> 4, b & 0xF]
-    words = interleaver_ref.interleave(words, 4, 1)
+    if code == "ldpc":
+        import phy2_ref
+        bps = phy2_ref.INFO_BYTES_PER_SYM
+        nsym = -(-len(payload) // bps)
+        words = phy2_ref.tx_words(bytes(payload), nsym, "ldpc")
+    else:
+        nsym = -(-len(payload) // BYTES_PER_OFDM)
+        data = list(payload) + [0] * (nsym * BYTES_PER_OFDM - len(payload))
+        sc = scrambler_ref.scramble(data)
+        words = []
+        for b in sc:
+            words += [b >> 4, b & 0xF]
+        words = interleaver_ref.interleave(words, 4, 1)
     bits = np.array([[(w >> (3 - k)) & 1 for k in range(4)] for w in words]).reshape(-1)
     iq = qam_ref.map_symbols(bits, order=16)
     frames = [ofdm_ref.preamble(0), ofdm_ref.preamble(1)]

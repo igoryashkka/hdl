@@ -13,6 +13,10 @@ module tb_phy_mmse_post;
   logic clr = 0, cfg_mmse = 1, chest_done = 0, nu_valid = 0; logic signed [12:0] lg_nu = 0;
   logic [10:0] eng_ra, eng_wa; logic [39:0] eng_rw, eng_wd; logic signed [11:0] eng_rlg; logic eng_we;
   logic [10:0] prm_ra = 0; logic [28:0] prm_rd; logic ready, busy;
+  logic [41:0] sig_sum = 0; logic signed [12:0] cfg_bad_thr = 13'sd106;
+  logic q_valid; logic signed [12:0] q_snr_avg, q_snr_min; logic [10:0] q_bad;
+  logic [41:0] sums [2]; logic [38:0] qexp [2];
+  int nq = 0;
   phy_mmse_post dut (.*);
   always_ff @(posedge clk) begin
     eng_rw <= wm[eng_ra]; eng_rlg <= lg[eng_ra];
@@ -20,8 +24,12 @@ module tb_phy_mmse_post;
   end
 
   int errors = 0;
+  always @(posedge clk) if (q_valid) begin
+    nq++;
+    if ({q_snr_avg, q_snr_min, q_bad} !== qexp[(cfg_mmse) ? 0 : 1]) begin errors++; $display("quality got avg %0d min %0d bad %0d exp %013x", q_snr_avg, q_snr_min, q_bad, qexp[cfg_mmse ? 0 : 1]); end
+  end
   task automatic run(input int mode, input bit nu_first);
-    @(posedge clk); #1; clr = 1; cfg_mmse = mode; @(posedge clk); #1; clr = 0;
+    @(posedge clk); #1; clr = 1; cfg_mmse = mode; sig_sum = sums[mode ? 0 : 1]; @(posedge clk); #1; clr = 0; nq = 0;
     for (int i = 0; i < NA; i++) wm[i] = w0[i];
     repeat (3) @(posedge clk);
     if (ready) begin errors++; $display("ready after clr"); end
@@ -29,7 +37,8 @@ module tb_phy_mmse_post;
     @(posedge clk); #1; chest_done = 1; @(posedge clk); #1; chest_done = 0;
     if (!nu_first) begin repeat (7) @(posedge clk); #1; nu_valid = 1; lg_nu = $signed(nus[mode ? 0 : 1]); @(posedge clk); #1; nu_valid = 0; end
     repeat (3000) begin @(posedge clk); if (ready) break; end
-    repeat (5) @(posedge clk);
+    repeat (30) @(posedge clk);
+    if (nq !== 1) begin errors++; $display("quality pulses %0d", nq); end
     if (!ready) begin errors++; $display("never ready (mode %0d)", mode); end
     for (int i = 0; i < NA; i++) begin
       logic [39:0] e;
@@ -47,6 +56,8 @@ module tb_phy_mmse_post;
     $readmemh("vec/eng_lg.mem", lg);
     $readmemh("vec/eng_nu.mem", nus);
     $readmemh("vec/eng_exp_w.mem", expw);
+    $readmemh("vec/eng_q.mem", sums);
+    $readmemh("vec/eng_qexp.mem", qexp);
     $readmemh("vec/eng_exp_p1.mem", tmpp); for (int j = 0; j < ND; j++) expp1[j] = tmpp[j][28:0];
     $readmemh("vec/eng_exp_p0.mem", tmpp); for (int j = 0; j < ND; j++) expp0[j] = tmpp[j][28:0];
     repeat (4) @(posedge clk); #1; rst = 0; repeat (2) @(posedge clk);

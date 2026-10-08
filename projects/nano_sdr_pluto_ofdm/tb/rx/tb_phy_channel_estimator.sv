@@ -9,6 +9,7 @@ module tb_phy_channel_estimator;
   logic [34:0] stim [MAXN];
   logic [39:0] expd [NA];
   logic [11:0] expl [NA];
+  logic [41:0] sig_sum; logic [41:0] expsum [1];
   logic [10:0] eng_ra = 0; logic [39:0] eng_rw; logic signed [11:0] eng_rlg; logic eng_we = 0; logic [10:0] eng_wa = 0; logic [39:0] eng_wd = 0;
   logic in_valid = 0, in_first = 0, in_last = 0; logic signed [15:0] in_re = 0, in_im = 0;
   logic done, rd_en = 0; logic [10:0] rd_addr = 0; logic [39:0] rd_data;
@@ -46,6 +47,7 @@ module tb_phy_channel_estimator;
     $readmemh("vec/cest_in.mem", stim);
     $readmemh("vec/cest_exp.mem", expd);
     $readmemh("vec/cest_lg.mem", expl);
+    $readmemh("vec/cest_sum.mem", expsum);
     while (^stim[ns] !== 1'bx) ns++;
     repeat (4) @(posedge clk); #1; rst = 0; repeat (2) @(posedge clk);
     // reset in the middle of a frame
@@ -56,6 +58,7 @@ module tb_phy_channel_estimator;
     play(ns);
     if (ndone !== 1) begin errors++; $display("done pulses %0d (exp 1)", ndone); end
     check_ram();
+    if (sig_sum !== expsum[0]) begin errors++; $display("sig_sum got %0d exp %0d", sig_sum, expsum[0]); end
     // frame 2 (RAM overwritten with identical data -> restart of the sign LFSR is exercised)
     ndone = 0;
     play(ns);

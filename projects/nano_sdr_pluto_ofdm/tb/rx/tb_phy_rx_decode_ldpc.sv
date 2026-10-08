@@ -1,0 +1,70 @@
+// Self-checking TB: phy_rx_decode_ldpc (soft demapper -> deinterleaver -> LDPC decoder -> descrambler) vs the Python chain model
+// (python/phy2_fixed_ref.py + ldpc_fixed_ref.py): equalised data bins of a 2-symbol packet on a 2-path channel, per-bin parameters
+// preloaded into a RAM model. Checks 900 payload bytes bit-exact, out_first / out_last flags, packet statistics (failed codewords,
+// max / total iterations), random input gaps, a second packet back to back.
+module tb_phy_rx_decode_ldpc;
+  localparam int NB = 1100, NSY = 2, NBYTES = 900;
+  logic clk = 0, rst = 1;
+  always #5 clk = ~clk;
+  logic [31:0] stim [NSY * NB];
+  logic [31:0] ptmp [NB];
+  logic [28:0] prm [NB];
+  logic [7:0]  expb [NBYTES];
+  logic [15:0] expst [3];
+  logic [7:0]  nsyms = NSY; logic [4:0] cfg_max_iter = 10;
+  logic in_valid = 0, in_first = 0, in_last = 0; logic signed [15:0] in_re = 0, in_im = 0;
+  logic [10:0] prm_ra; logic [28:0] prm_rd;
+  logic out_valid, out_first, out_last, il_overflow, stat_valid, cw_pulse, cw_fail_pulse;
+  logic [7:0] out_data, stat_fail; logic [4:0] stat_iter_max; logic [11:0] stat_iter_sum;
+  phy_rx_decode_ldpc dut (.*);
+  always_ff @(posedge clk) prm_rd <= prm[prm_ra];
+
+  int errors = 0, nb = 0, npk = 0, nst = 0;
+  always @(posedge clk) if (!rst) begin
+    if (out_valid) begin
+      if (nb < NBYTES && out_data !== expb[nb]) begin errors++; if (errors < 10) $display("pkt %0d byte %0d got %02x exp %02x", npk, nb, out_data, expb[nb]); end
+      if (out_first !== (nb == 0)) begin errors++; $display("first flag at %0d", nb); end
+      if (out_last !== (nb == NBYTES - 1)) begin errors++; $display("last flag at %0d", nb); end
+      nb++;
+      if (out_last) begin if (nb !== NBYTES) begin errors++; $display("packet length %0d", nb); end nb = 0; npk++; end
+    end
+    if (stat_valid) begin
+      if ({8'd0, stat_fail} !== expst[0] || {11'd0, stat_iter_max} !== expst[1] || {4'd0, stat_iter_sum} !== expst[2]) begin
+        errors++; $display("stats got fail %0d max %0d sum %0d exp %0d %0d %0d", stat_fail, stat_iter_max, stat_iter_sum, expst[0], expst[1], expst[2]);
+      end
+      nst++;
+    end
+  end
+
+  task automatic send_packet();
+    for (int s = 0; s < NSY; s++) begin
+      for (int i = 0; i < NB; i++) begin
+        while ($urandom_range(0, 9) < 2) begin @(posedge clk); #1; in_valid = 0; in_first = $urandom; in_last = $urandom; in_re = $urandom; in_im = $urandom; end
+        @(posedge clk); #1;
+        in_valid = 1; in_first = (i == 0); in_last = (i == NB - 1);
+        in_re = stim[s * NB + i][31:16]; in_im = stim[s * NB + i][15:0];
+      end
+      @(posedge clk); #1; in_valid = 0; in_first = 0; in_last = 0;
+      repeat (1000) @(posedge clk);                       // symbol spacing (the real chain is much slower)
+    end
+  endtask
+
+  initial begin
+    $readmemh("vec/cdb_in.mem", stim);
+    $readmemh("vec/cdb_prm.mem", ptmp); for (int i = 0; i < NB; i++) prm[i] = ptmp[i][28:0];
+    $readmemh("vec/cdb_exp.mem", expb);
+    $readmemh("vec/cdb_stat.mem", expst);
+    repeat (4) @(posedge clk); #1; rst = 0; repeat (2) @(posedge clk);
+    send_packet();
+    repeat (12000) @(posedge clk);
+    send_packet();
+    repeat (20000) begin @(posedge clk); if (npk == 2) break; end
+    repeat (50) @(posedge clk);
+    if (npk !== 2) begin errors++; $display("packets %0d != 2", npk); end
+    if (nst !== 2) begin errors++; $display("stat pulses %0d != 2", nst); end
+    if (il_overflow) begin errors++; $display("interleaver overflow"); end
+    if (errors == 0) $display("TEST PASSED tb_phy_rx_decode_ldpc (2 packets x %0d bytes bit-exact)", NBYTES);
+    else $display("TEST FAILED tb_phy_rx_decode_ldpc errors=%0d", errors);
+    $finish;
+  end
+endmodule

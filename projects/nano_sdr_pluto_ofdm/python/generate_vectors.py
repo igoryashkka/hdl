@@ -218,6 +218,12 @@ for k, pk in enumerate(txp):
     wr(f"txt_pkt{k}_in.mem", pk, 2)
     wr(f"txt_pkt{k}_exp.mem", [((a & 0xFFFF) << 16) | (b & 0xFFFF) for a, b in tx_ref.tx_frame(pk)], 8)
 
+# ---- coded TX chain: two packets (900 bytes = 2 symbols, 500 bytes padded to 2 symbols) ----
+txc = [[rng.getrandbits(8) for _ in range(n)] for n in (900, 500)]
+for k, pk in enumerate(txc):
+    wr(f"txc_pkt{k}_in.mem", pk, 2)
+    wr(f"txc_pkt{k}_exp.mem", [((a & 0xFFFF) << 16) | (b & 0xFFFF) for a, b in tx_ref.tx_frame(pk, code="ldpc")], 8)
+
 # ---- Schmidl-Cox detector: TAG -> (snr_db, cfo_hz, lead, paths) ; tag 2 = noise only (no event expected) ----
 import channel_ref, sync_ref, sync_test, rx_test
 _pay, _x = rx_test.make_frame()
@@ -320,6 +326,7 @@ mr, mi, E = rfx.chest(yr_a, yi_a)
 wr("cest_exp.mem", [pack_w(int(a), int(b), int(c)) for a, b, c in zip(mr, mi, E)], 10)
 import phy2_fixed_ref as _pf0
 wr("cest_lg.mem", [int(v) & 0xFFF for v in _pf0.chest_lg(yr_a, yi_a)], 3)
+wr("cest_sum.mem", [_pf0.chest_lg_sum(yr_a, yi_a)[1]], 11)
 # gaps: valid + {first,last} + data
 seq = []
 for k, (a, b) in enumerate(fr):
@@ -397,7 +404,7 @@ seg_b = channel_ref.apply_channel(xb, snr_db=30, cfo_hz=-7000.0, paths=((0, 1), 
 i_a, q_a = sync_test.adc(np.concatenate([seg_a, seg_b]))
 wr("rxs_in.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(i_a, q_a)], 8)
 wr("rxs_pay.mem", pay_a + pay_b, 2)
-_di = np.array(rb.dc_remove(i_a, 12)); _dq = np.array(rb.dc_remove(q_a, 12))
+_di = np.array(rb.dc_remove(i_a, 16)); _dq = np.array(rb.dc_remove(q_a, 16))
 _ev = sync_ref.detect_events(_di, _dq, hold=9000)
 def _py_evm(di, dq, e):
     """python mirror of the RX packet path: sum of the pilot L1 errors over the data symbols (RTL differs by a few NCO samples)."""
@@ -418,6 +425,20 @@ def _py_evm(di, dq, e):
 with open(os.path.join(OUT, "rxs_ev.mem"), "w") as f:
     for e in _ev:
         f.write(("%08x %08x %08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]), sync_ref.rssi_code(e["r_best"]), _py_evm(_di, _dq, e))) + chr(10))
+# ---- coded variant of the system stream: LDPC frames, same channel structure, B at a lower SNR so that LDPC iterates ----
+_pc = [[rng.getrandbits(8) for _ in range(2 * 450)] for _ in range(2)]
+_xc = [np.array([complex(a, b) for a, b in tx_ref.tx_frame(pp, code="ldpc")]) for pp in _pc]
+_sga = channel_ref.apply_channel(_xc[0], snr_db=33, cfo_hz=9000.0, paths=((0, 1),), lead=1200, trail=9000, seed=31)
+_sgb = channel_ref.apply_channel(_xc[1], snr_db=22, cfo_hz=-7000.0, paths=((0, 1), (9, 0.4j)), lead=0, trail=3000, seed=32)
+_ic, _qc = sync_test.adc(np.concatenate([_sga, _sgb]))
+wr("rxc_in.mem", [((int(a) & 0xFFFF) << 16) | (int(b) & 0xFFFF) for a, b in zip(_ic, _qc)], 8)
+wr("rxc_pay.mem", _pc[0] + _pc[1], 2)
+_dic = np.array(rb.dc_remove(_ic, 16)); _dqc = np.array(rb.dc_remove(_qc, 16))
+_evc = sync_ref.detect_events(_dic, _dqc, hold=9000)
+with open(os.path.join(OUT, "rxc_ev.mem"), "w") as f:
+    for e in _evc:
+        f.write(("%08x %08x %08x %08x" % (e["n_best"], sync_ref.cfo_inc(e["p_re"], e["p_im"]), sync_ref.rssi_code(e["r_best"]), 0)) + chr(10))
+print("coded rx system stream", len(_ic), "samples; events", [(e["n_decl"], e["n_best"]) for e in _evc])
 print("rx system stream", len(i_a), "samples; events", [(e["n_decl"], e["n_best"]) for e in _ev])
 print("OK vectors in", OUT)
 
@@ -523,4 +544,36 @@ for _mode in (1, 0):
 wr("eng_exp_w.mem", _res[1][0], 10)
 wr("eng_exp_p1.mem", _res[1][1], 8)
 wr("eng_exp_p0.mem", _res[0][1], 8)
-print("mmse post vectors ok")
+_qs = []
+_sig_sums = [int(_rp.integers(1 << 28, 1 << 40)), int(_rp.integers(1 << 20, 1 << 30))]
+for _mode, _nu_ in ((1, _nus[0]), (0, _nus[1])):
+    _qs.append(pf.quality_codes(_plg, _nu_, _sig_sums[0 if _mode else 1]))
+wr("eng_q.mem", [(_sig_sums[0] << 0), (_sig_sums[1] << 0)], 11)
+wr("eng_qexp.mem", [((a & 0x1FFF) << 24) | ((m & 0x1FFF) << 11) | (b & 0x7FF) for (a, m, b) in _qs], 10)
+print("mmse post vectors ok", _qs)
+
+# ---- coded RX back-end (phy_rx_decode_ldpc): 2-symbol packet (900 bytes) through the real chain model on a 2-path channel ----
+import phy2_ref as _p2
+import phy2_fixed_test as _p2t
+import phy2_test as _p2s
+_rb = np.random.default_rng(404)
+_p2s.rng = _rb
+_nsy = 2
+_Hc = _p2s.chan("2path")
+_pay_b = bytes(_rb.integers(0, 256, _p2.bytes_per_sym("ldpc") * _nsy, dtype=np.uint8))
+_wds = _p2.tx_words(_pay_b, _nsy, "ldpc")
+_sg2 = np.mean(np.abs(_Hc) ** 2) * _p2.P_DATA / 10 ** (18.5 / 10)
+_yl, _ys = _p2s.make_y(_wds, _Hc, _sg2, _nsy)
+_ylq, _ysq = _p2t.int_y(_yl, _ys)
+_llr_b, _dg = pf.receive_symbols(_ylq, _ysq, True)
+_bytes_b, _its_b, _done_b = pf.decode_llr(_llr_b, _nsy, len(_pay_b), 10)
+print("coded back-end vector: payload match", _bytes_b == _pay_b, "iterations", _its_b.tolist())
+_xin = []
+for _s in range(_nsy):
+    _xr, _xi = _dg["eq"][_s]
+    for _k in range(1100):
+        _xin.append((int(_xr[_k]) & 0xFFFF) << 16 | (int(_xi[_k]) & 0xFFFF))
+wr("cdb_in.mem", _xin, 8)
+wr("cdb_prm.mem", [(int(_dg["T"][k]) << 13) | (int(_dg["gm"][k]) << 7) | (int(_dg["ge"][k]) & 0x7F) for k in range(1100)], 8)
+wr("cdb_exp.mem", [int(b) for b in _bytes_b], 2)
+wr("cdb_stat.mem", [int((~_done_b).sum()), int(_its_b.max()), int(_its_b.sum())], 4)

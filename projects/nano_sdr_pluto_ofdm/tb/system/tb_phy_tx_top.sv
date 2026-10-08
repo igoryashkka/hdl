@@ -3,8 +3,9 @@
 // DAC modelled as a sample strobe every 2nd clock (processing clock = 2 x sample rate, like l_clk = 61.44 MHz for 30.72 MSPS).
 // Checks: bit-exact samples, continuity inside a packet (no pull without data once a packet started to play),
 // no overflow, pkt_done pulses (2), s_ready low while a packet is buffered, idle output is zero.
-module tb_phy_tx_top;
+module tb_phy_tx_top #(parameter int CODED = 0);
   localparam int SYM = 2192, NA = 4 * SYM, NB = 4 * SYM;
+  localparam int P0N = CODED ? 900 : 1100, P1N = CODED ? 500 : 700;     // coded: 450 payload bytes per OFDM symbol
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
 
@@ -16,7 +17,7 @@ module tb_phy_tx_top;
   logic s_valid = 0, s_ready, s_last = 0; logic [7:0] s_data = 0;
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
-  phy_tx_top dut (.clk, .rst, .gain, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
+  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
                   .underflow, .overflow, .pkt_trunc, .pkt_done, .busy);
 
   int errors = 0, nout = 0, npd = 0, gap_errs = 0;
@@ -66,15 +67,18 @@ module tb_phy_tx_top;
 
   initial begin
     string f;
-    $readmemh("vec/txt_pkt0_in.mem", pkt0);
-    $readmemh("vec/txt_pkt1_in.mem", pkt1);
-    $readmemh("vec/txt_pkt0_exp.mem", exp0);
-    $readmemh("vec/txt_pkt1_exp.mem", exp1);
+    if (CODED) begin
+      $readmemh("vec/txc_pkt0_in.mem", pkt0); $readmemh("vec/txc_pkt1_in.mem", pkt1);
+      $readmemh("vec/txc_pkt0_exp.mem", exp0); $readmemh("vec/txc_pkt1_exp.mem", exp1);
+    end else begin
+      $readmemh("vec/txt_pkt0_in.mem", pkt0); $readmemh("vec/txt_pkt1_in.mem", pkt1);
+      $readmemh("vec/txt_pkt0_exp.mem", exp0); $readmemh("vec/txt_pkt1_exp.mem", exp1);
+    end
     repeat (6) @(posedge clk); #1; rst = 0; repeat (4) @(posedge clk);
     checking = 1;
-    send(1100, 0);
+    send(P0N, 0);
     if (s_ready !== 1'b0 && busy === 1'b0) begin errors++; $display("busy not set after packet"); end
-    send(700, 1);
+    send(P1N, 1);
     // wait for everything to play out
     repeat (400000) begin
       @(posedge clk);
@@ -84,7 +88,7 @@ module tb_phy_tx_top;
     if (nout !== NA + NB) begin errors++; $display("samples %0d != %0d", nout, NA + NB); end
     if (npd !== 2) begin errors++; $display("pkt_done pulses %0d != 2", npd); end
     if (gap_errs != 0) errors += gap_errs;
-    if (errors == 0) $display("TEST PASSED tb_phy_tx_top (%0d samples bit-exact)", nout);
+    if (errors == 0) $display("TEST PASSED tb_phy_tx_top CODED=%0d (%0d samples bit-exact)", CODED, nout);
     else $display("TEST FAILED tb_phy_tx_top errors=%0d", errors);
     $finish;
   end
