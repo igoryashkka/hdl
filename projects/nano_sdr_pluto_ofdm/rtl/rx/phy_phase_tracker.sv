@@ -42,6 +42,7 @@ module phy_phase_tracker
   localparam int NA = NUM_ACTIVE_SC;
   localparam int XW = 18;
   localparam logic signed [63:0] KB64 = 64'(SFO_KB);
+  localparam logic signed [24:0] KB25 = 25'(SFO_KB);
 
   // ---------------------------------------------------------------- write side: buffer + pilot accumulation
   logic [31:0] buf_ram [NA];
@@ -67,7 +68,7 @@ module phy_phase_tracker
   always_ff @(posedge clk) begin
     last_seen <= 1'b0;
     if (rst) begin
-      wcnt <= '0; pmod <= '0; lfsr <= PILOT_SEED; acc_r <= '0; acc_i <= '0; macc_r <= '0; macc_i <= '0;
+      wcnt <= '0; pmod <= '0; lfsr <= PILOT_SEED; acc_r <= '0; acc_i <= '0;
     end else if (in_valid) begin
       wcnt <= w_cur + 1'b1;
       pmod <= (pm_cur == 4'(PILOT_SPACING - 1)) ? 4'd0 : pm_cur + 1'b1;
@@ -75,17 +76,33 @@ module phy_phase_tracker
         lfsr  <= {lf_cur[13:0], sig};
         acc_r <= (in_first ? 27'sd0 : acc_r) + term_r;
         acc_i <= (in_first ? 27'sd0 : acc_i) + term_i;
-        macc_r <= (in_first ? 40'sd0 : macc_r) + 40'(term_r * f_cur);
-        macc_i <= (in_first ? 40'sd0 : macc_i) + 40'(term_i * f_cur);
       end else if (in_first) begin
-        lfsr <= PILOT_SEED; acc_r <= '0; acc_i <= '0; macc_r <= '0; macc_i <= '0;
+        lfsr <= PILOT_SEED; acc_r <= '0; acc_i <= '0;
       end
       last_seen <= in_last;
     end
   end
 
+  // slope accumulation: 3-stage pipeline (sign/f register -> DSP product -> 40-bit accumulate). macc is only read in S_M1, long after
+  // the last pilot (CORDIC + sin/cos in between), so the pipeline latency is invisible.
+  logic               m1_v, m1_pil, m1_first, m2_v, m2_pil, m2_first;
+  logic signed [26:0] m1_tr, m1_ti;
+  logic signed [11:0] m1_f;
+  logic signed [38:0] m2_pr, m2_pi;
+  always_ff @(posedge clk) begin
+    m1_v <= in_valid & ~rst; m1_pil <= is_pil; m1_first <= in_first; m1_tr <= term_r; m1_ti <= term_i; m1_f <= f_cur;
+    m2_v <= m1_v; m2_pil <= m1_pil; m2_first <= m1_first; m2_pr <= m1_tr * m1_f; m2_pi <= m1_ti * m1_f;
+    if (rst) begin macc_r <= '0; macc_i <= '0; end
+    else if (m2_v) begin
+      if (m2_pil) begin
+        macc_r <= (m2_first ? 40'sd0 : macc_r) + 40'(m2_pr);
+        macc_i <= (m2_first ? 40'sd0 : macc_i) + 40'(m2_pi);
+      end else if (m2_first) begin macc_r <= '0; macc_i <= '0; end
+    end
+  end
+
   // ---------------------------------------------------------------- control FSM: normalise -> CORDIC -> sin/cos -> read-out
-  typedef enum logic [3:0] {S_IDLE, S_NORM, S_NORM2, S_START, S_WAIT, S_PHASE, S_SC, S_M1, S_M2, S_M3, S_M4, S_READ} st_t;
+  typedef enum logic [3:0] {S_IDLE, S_NORM, S_NORM2, S_START, S_WAIT, S_PHASE, S_SC, S_M1, S_M2, S_M3, S_M3B, S_M4, S_READ} st_t;
   st_t st;
   logic [4:0] shn, shn_q;
   logic signed [XW-1:0] cx, cy;
@@ -95,11 +112,13 @@ module phy_phase_tracker
   logic         sc_in_valid, sc_valid;
   logic signed [15:0] cs_c, cs_s, c_hold, s_hold;
   logic [10:0]  rcnt;
+  logic         r_half, r_end;                       // registered rcnt == NA/2-1 / NA-1 (keeps the compare out of the ph_acc adder path)
   logic [3:0]   rpm;
   logic [14:0]  rlf;
   logic signed [55:0] pm_c, pm_s;                    // slope mode: M * e^{-j theta} (imaginary part)
   logic signed [47:0] im_t;
   logic signed [63:0] sp_t;
+  logic signed [49:0] sp_lo, sp_hi;
   logic [31:0]  sbin, ph_acc;
   wire  [31:0]  s1200 = (sbin << 10) + (sbin << 7) + (sbin << 5) + (sbin << 4);
 
@@ -136,12 +155,13 @@ module phy_phase_tracker
         S_WAIT:  if (cdone) begin angle_o <= cang; angle_valid <= 1'b1; st <= S_PHASE; end
         S_PHASE: begin pidx <= 12'((-angle_o) >> 20); sc_in_valid <= 1'b1; st <= S_SC; end
         S_SC:    if (sc_valid) begin
-                   c_hold <= cs_c; s_hold <= cs_s; rcnt <= '0; rpm <= '0; rlf <= PILOT_SEED;
+                   c_hold <= cs_c; s_hold <= cs_s; rcnt <= '0; r_half <= 1'b0; r_end <= 1'b0; rpm <= '0; rlf <= PILOT_SEED;
                    if (SLOPE) st <= S_M1; else begin sbin <= '0; ph_acc <= '0; st <= S_READ; end
                  end
         S_M1:    begin pm_c <= macc_i * c_hold; pm_s <= macc_r * s_hold; st <= S_M2; end
         S_M2:    begin im_t <= 48'((pm_c + pm_s) >>> 15); st <= S_M3; end
-        S_M3:    begin sp_t <= 64'(im_t) * KB64; st <= S_M4; end
+        S_M3:    begin sp_lo <= $signed({1'b0, im_t[23:0]}) * KB25; sp_hi <= $signed(im_t[47:24]) * KB25; st <= S_M3B; end
+        S_M3B:   begin sp_t <= (64'(sp_hi) <<< 24) + 64'(sp_lo); st <= S_M4; end
         S_M4:    begin
                    sbin <= sp_t[51:20]; slope_o <= sp_t[51:20]; slope_valid <= 1'b1;
                    ph_acc <= -angle_o - sp_t[51:20];
@@ -149,10 +169,11 @@ module phy_phase_tracker
                  end
         S_READ:  begin
           rcnt <= rcnt + 1'b1;
-          ph_acc <= (rcnt == 11'(NA / 2 - 1)) ? ph_acc + s1200 : ph_acc - sbin;
+          r_half <= (rcnt == 11'(NA / 2 - 2)); r_end <= (rcnt == 11'(NA - 2));
+          ph_acc <= r_half ? ph_acc + s1200 : ph_acc - sbin;
           rpm  <= (rpm == 4'(PILOT_SPACING - 1)) ? 4'd0 : rpm + 1'b1;
           if (r_is_pil) rlf <= {rlf[13:0], rlf[14] ^ rlf[13]};
-          if (rcnt == 11'(NA - 1)) st <= S_IDLE;
+          if (r_end) st <= S_IDLE;
         end
         default: st <= S_IDLE;
       endcase

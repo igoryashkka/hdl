@@ -1,0 +1,308 @@
+<title>Звіт PHY для Zynq-7020</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* layout: one reading column with a sticky section index; charts in responsive grids; numbers in mono */
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --ink:#14181c; --ink2:#4a5560; --muted:#76818c; --line:#dde2e7; --grid:#e8ecf0;
+  --accent:#2a78d6; --good:#1c7c46; --warn:#9a6a00; --bad:#c23b3a; --pill-good:#e3f3ea; --pill-warn:#fbf0d4; --pill-bad:#fbe4e3;
+  --s1:#eb6834; --s2:#2a78d6; --s3:#1baf7a; --s4:#4a3aa7; --s5:#eda100; --s6:#e87ba4;
+  --sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif; --mono:'IBM Plex Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e1215; --surface:#161b20; --ink:#eef2f5; --ink2:#b4bec7; --muted:#8793a0; --line:#2a3138; --grid:#232a30;
+  --accent:#3987e5; --good:#5bc489; --warn:#e0b44a; --bad:#ef7a79; --pill-good:#17301f; --pill-warn:#33290e; --pill-bad:#391b1b;
+  --s1:#d95926; --s2:#3987e5; --s3:#199e70; --s4:#9085e9; --s5:#c98500; --s6:#d55181; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e1215; --surface:#161b20; --ink:#eef2f5; --ink2:#b4bec7; --muted:#8793a0; --line:#2a3138; --grid:#232a30;
+  --accent:#3987e5; --good:#5bc489; --warn:#e0b44a; --bad:#ef7a79; --pill-good:#17301f; --pill-warn:#33290e; --pill-bad:#391b1b;
+  --s1:#d95926; --s2:#3987e5; --s3:#199e70; --s4:#9085e9; --s5:#c98500; --s6:#d55181; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans);margin:0;padding-inline:16px;padding-block:28px 72px}
+.wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+h1{font-size:clamp(26px,4.4vw,38px);line-height:1.12;margin:6px 0 10px;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:21px;margin:0 0 4px;font-weight:600;text-wrap:balance} h3{font-size:14px;margin:0;font-weight:600}
+h2 .n{font:500 13px var(--mono);color:var(--muted);margin-right:8px}
+p{margin:0;max-width:72ch} .sub{color:var(--ink2);margin-bottom:14px;max-width:76ch}
+.kicker{font:500 12px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lead{color:var(--ink2);font-size:16px;max-width:70ch}
+.banner{border:1px solid var(--line);border-left:4px solid var(--warn);background:var(--surface);border-radius:8px;padding:10px 14px;font-size:13.5px;color:var(--ink2);max-width:80ch}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:18px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.stat b{display:block;font:500 28px/1.1 var(--mono);letter-spacing:-.02em}
+.stat span{display:block;color:var(--ink2);font-size:13px;margin-top:6px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,310px),1fr));gap:14px}
+.chart{position:relative}.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.chart .ttl{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:2px}.chart .ttl small{color:var(--muted);font-size:12px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 2px;font-size:12.5px;color:var(--ink2)}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:3;min-width:140px;display:none}
+.tip b{font-family:var(--mono);font-weight:500}.tip div{display:flex;justify-content:space-between;gap:12px;white-space:nowrap}.tip div i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.ax{fill:var(--muted);font:11px var(--mono)}.axl{fill:var(--ink2);font:11.5px var(--sans)}
+.pill{display:inline-block;font:500 11.5px var(--mono);padding:2px 8px;border-radius:99px;white-space:nowrap}
+.pill.good{background:var(--pill-good);color:var(--good)}.pill.warn{background:var(--pill-warn);color:var(--warn)}.pill.bad{background:var(--pill-bad);color:var(--bad)}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:500;color:var(--ink2);font-size:12px}td.n,th.n{text-align:right;font-family:var(--mono);white-space:nowrap}
+tr.hl td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.scroll{overflow-x:auto}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px 4px;margin:8px 0 14px}
+.flow .b{border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12.5px;background:var(--bg);white-space:nowrap}
+.flow .b.new{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--surface));font-weight:500}
+.flow .b.chg{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--surface))}
+.flow .a{color:var(--muted)}
+.key{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin-top:4px}.key i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:middle;border:1px solid var(--line)}
+.calc{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}@media(max-width:760px){.calc{grid-template-columns:1fr}}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--ink2);min-width:0}
+input,select{font:14px var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:7px 8px;width:100%;min-width:0}
+input:focus,select:focus,summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.out{display:flex;flex-direction:column;gap:8px}.out .big{font:500 38px/1 var(--mono);letter-spacing:-.02em}.out .big small{font-size:16px;color:var(--ink2);margin-left:4px}
+.kv{display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding-top:7px;font-size:13.5px}.kv span:last-child{font-family:var(--mono)}
+.note{font-size:12.5px;color:var(--muted)}
+nav.idx{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;position:sticky;top:0;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);padding:8px 0;z-index:5;border-bottom:1px solid var(--line)}
+nav.idx a{color:var(--ink2);text-decoration:none}nav.idx a:hover{color:var(--accent)}
+ul.plain{margin:0;padding-left:18px;color:var(--ink2);display:flex;flex-direction:column;gap:6px;max-width:78ch}
+code{font-family:var(--mono);font-size:.92em;background:var(--bg);padding:1px 5px;border-radius:4px}
+details{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px}summary{cursor:pointer;font-weight:500}
+section{min-width:0;scroll-margin-top:50px}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="kicker">Nano SDR Pluto · гілка OFDM_PHY_Z7020 · симулятор phy_sim + RTL (xsim) + Vivado</div>
+  <h1>Скільки дБ дає новий PHY і що це значить для дальності</h1>
+  <p class="lead">Порівняння поточного PHY (16-QAM, ZF, жорсткі рішення) з новим (LDPC R = 5/6, soft LLR, MMSE, стеження за SFO, точний тайминг, оцінка SNR) на однакових каналах. Усе виміряно в симуляторі на бітово-точних моделях RTL; RTL перевірено окремо в xsim, дизайн зібрано у Vivado для Zynq-7020.</p>
+  <div class="banner"><b>Design not targeted for Zynq-7010.</b> Гілка і білди цілять на xc7z020clg400-1. Сумісність із Z7010 не зберігається. Роботу на реальному залізі на цьому етапі не перевірено.</div>
+  <div class="stats" id="stats"></div>
+</header>
+<nav class="idx" id="idx"></nav>
+
+<section id="s1"><h2><span class="n">1</span>Конфігурація</h2><div class="card scroll" id="cfg"></div></section>
+<section id="s2"><h2><span class="n">2</span>Архітектура PHY</h2><p class="sub">Блакитним позначено нові блоки, жовтим змінені. Решта ланцюжка (OFDM, FFT, синхронізація Шмідля-Кокса, CFO) без змін.</p><div class="card" id="arch"></div></section>
+<section id="s3"><h2><span class="n">3</span>Результати LDPC</h2><p class="sub" id="ldpc_sub"></p><div class="grid2"><div class="card chart" id="ch_fer"></div><div class="card chart" id="ch_iter"></div></div><div class="card scroll" id="ldpc_tbl" style="margin-top:14px"></div></section>
+<section id="s4"><h2><span class="n">4</span>Результати MMSE</h2><p class="sub" id="mmse_sub"></p><div class="grid2"><div class="card chart" id="ch_mp2"></div><div class="card chart" id="ch_mp3"></div></div><div class="card scroll" id="mmse_tbl" style="margin-top:14px"></div></section>
+<section id="s5"><h2><span class="n">5</span>Результати синхронізації</h2><p class="sub" id="sync_sub"></p><div class="grid2"><div class="card chart" id="ch_sfo8"></div><div class="card chart" id="ch_sfo2"></div></div><div class="grid2" style="margin-top:14px"><div class="card chart" id="ch_cfo28"></div><div class="card chart" id="ch_cfo22"></div></div><div class="card scroll" id="sync_tbl" style="margin-top:14px"></div></section>
+<section id="s6"><h2><span class="n">6</span>Оцінка SNR і якості каналу</h2><p class="sub" id="q_sub"></p><div class="grid2"><div class="card chart" id="ch_snrest"></div><div class="card chart" id="ch_badsc"></div></div></section>
+<section id="s7"><h2><span class="n">7</span>PER проти SNR</h2><p class="sub">Один пакет = 2 OFDM-символи (поточний PHY 1100 байт, новий 900 байт). SNR на відлік у смузі 30.72 МГц.</p><div class="grid2"><div class="card chart" id="ch_awgn"></div><div class="card chart" id="ch_snr1"></div></div><div class="card scroll" id="thr_tbl" style="margin-top:14px"></div></section>
+<section id="s8"><h2><span class="n">8</span>Дефекти каналу і радіотракту</h2><p class="sub">Поточний PHY при SNR 28 дБ, новий при 24 дБ (нижче, ніж потрібно поточному), щоб було видно запас.</p><div class="grid3" id="imp"></div></section>
+<section id="s9"><h2><span class="n">9</span>Пропускна здатність і затримка</h2><div class="card scroll" id="thr_rate"></div><div class="card scroll" id="rtl_tbl" style="margin-top:14px"></div></section>
+<section id="s10"><h2><span class="n">10</span>Ресурси FPGA</h2><p class="sub" id="res_sub"></p><div class="card scroll" id="res_tbl"></div><div class="card scroll" id="res_hier" style="margin-top:14px"></div></section>
+<section id="s11"><h2><span class="n">11</span>Link budget</h2><p class="sub">Потрібний SNR береться з кривих PER проти SNR (розділ 7). Чутливість: −174 дБм/Гц + 10·lg(30.72 МГц) + NF + SNR. Результат для вільного простору, запас на завмирання задається окремо.</p><div class="card calc"><div><div class="fields" id="fields"></div><p class="note" style="margin-top:10px">SNR виміряно на відлік (шум по всій смузі 30.72 МГц). Виграш у dB береться з симуляції, наперед нічого не задано.</p></div><div class="out" id="c_out"></div></div></section>
+<section id="s12"><h2><span class="n">12</span>Запас по дальності</h2><div class="card scroll" id="range_tbl"></div></section>
+<section id="s13"><h2><span class="n">13</span>Порівняння Current PHY і New PHY</h2><div class="card scroll" id="cmp_tbl"></div></section>
+<section id="s14"><h2><span class="n">14</span>Висновки</h2><div class="card"><ul class="plain" id="concl"></ul></div>
+  <details style="margin-top:12px"><summary>Метод, обмеження, відтворення</summary><ul class="plain" style="margin-top:10px" id="method"></ul></details></section>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = /*DATA*/null;
+const C = DATA.compare.experiments, RTL = DATA.rtl, RES = DATA.res, BASE = DATA.base;
+const $ = (s,r=document)=>r.querySelector(s);
+const E = id => C.find(e=>e.id===id);
+const S = (id,name)=>E(id).series[name];
+const pct = v => v==null?'–':(v*100).toFixed(v<0.1&&v>0?1:0)+' %';
+const f1 = v => v==null?'–':v.toFixed(1), f2 = v => v==null?'–':v.toFixed(2);
+const COL = {current:'var(--s1)', new:'var(--s2)', new_zf:'var(--s3)'};
+const LAB = {current:'Current: 16-QAM + ZF + hard', new:'New: LDPC + soft LLR + MMSE', new_zf:'New: LDPC + soft LLR + ZF'};
+
+/* lowest SNR from which PER stays <= lim for all higher points */
+function thr(pts, lim){let b=null;for(let i=pts.length-1;i>=0;i--){if(pts[i].per<=lim)b=pts[i].x;else break}return b}
+/* linear interpolation of the crossing for a smoother estimate */
+function thrI(pts, lim){let i=pts.length-1;if(pts[i].per>lim)return null;while(i>0&&pts[i-1].per<=lim)i--;if(i===0)return pts[0].x;const a=pts[i-1],b=pts[i];if(a.per===b.per)return b.x;return a.x+(lim-a.per)/(b.per-a.per)*(b.x-a.x)}
+
+/* ---------- chart ---------- */
+function lineChart(host,o){
+  const W=520,H=o.h||250,m={l:46,r:12,t:10,b:o.xlabel?38:26},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const xs=o.series[0].pts.map(p=>p.x),x0=Math.min(...xs),x1=Math.max(...xs),ord=o.ordinal;
+  const X=(x,i)=>m.l+(ord?(xs.length>1?i/(xs.length-1):.5)*iw:(x1>x0?(x-x0)/(x1-x0):.5)*iw);
+  const ymax=o.ymax||1,Y=v=>m.t+ih-(Math.min(Math.max(v,0),ymax)/ymax)*ih;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${o.title}">`;
+  (o.yticks||[0,.25,.5,.75,1]).forEach(t=>{s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(t*ymax)}" y2="${Y(t*ymax)}" style="stroke:var(--grid)"/><text class="ax" x="${m.l-6}" y="${Y(t*ymax)+4}" text-anchor="end">${o.yfmt?o.yfmt(t*ymax):Math.round(t*100)+'%'}</text>`});
+  (o.hlines||[]).forEach(h=>{s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(h.y)}" y2="${Y(h.y)}" style="stroke:var(--muted)" stroke-dasharray="4 4"/><text class="ax" x="${W-m.r}" y="${Y(h.y)-4}" text-anchor="end">${h.label}</text>`});
+  if(o.diag) s+=`<line x1="${X(x0,0)}" y1="${Y(o.diag(x0))}" x2="${X(x1,xs.length-1)}" y2="${Y(o.diag(x1))}" style="stroke:var(--muted)" stroke-dasharray="3 4"/>`;
+  const step=Math.max(1,Math.ceil(xs.length/(o.maxticks||9)));
+  xs.forEach((x,i)=>{if(i%step===0||i===xs.length-1)s+=`<text class="ax" x="${X(x,i)}" y="${H-m.b+15}" text-anchor="middle">${o.xfmt?o.xfmt(x):x}</text>`});
+  if(o.xlabel)s+=`<text class="axl" x="${m.l+iw/2}" y="${H-3}" text-anchor="middle">${o.xlabel}</text>`;
+  o.series.forEach(se=>{
+    const d=se.pts.map((p,i)=>p.y==null?'':(se._m?'L':(se._m=1,'M'))+X(p.x,i).toFixed(1)+' '+Y(p.y).toFixed(1)).join(' ');
+    se._m=0;
+    s+=`<path d="${d}" fill="none" style="stroke:${se.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    se.pts.forEach((p,i)=>{if(p.y!=null)s+=`<circle cx="${X(p.x,i).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="3.1" style="fill:${se.color};stroke:var(--surface)" stroke-width="1.5"/>`});
+  });
+  s+=`<line id="cx" x1="0" x2="0" y1="${m.t}" y2="${m.t+ih}" style="stroke:var(--muted)" opacity="0"/><rect class="hit" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  host.innerHTML=`<div class="ttl"><h3>${o.title}</h3><small>${o.note||''}</small></div>`+(o.series.length>1?`<div class="legend">${o.series.map(se=>`<span><i style="background:${se.color}"></i>${se.name}</span>`).join('')}</div>`:'')+s;
+  const svg=$('svg',host),hit=$('.hit',host),cx=$('#cx',host),tip=$('#tip');
+  hit.addEventListener('mousemove',ev=>{
+    const r=svg.getBoundingClientRect(),px=(ev.clientX-r.left)/r.width*W;let bi=0,bd=1e9;xs.forEach((x,i)=>{const d=Math.abs(X(x,i)-px);if(d<bd){bd=d;bi=i}});
+    cx.setAttribute('x1',X(xs[bi],bi));cx.setAttribute('x2',X(xs[bi],bi));cx.setAttribute('opacity',1);
+    tip.innerHTML=`<b>${o.xtip?o.xtip(xs[bi]):(o.xfmt?o.xfmt(xs[bi]):xs[bi])}</b>`+o.series.map(se=>`<div><span><i style="background:${se.color}"></i>${se.name}</span><b>${o.vfmt?o.vfmt(se.pts[bi].y):pct(se.pts[bi].y)}</b></div>`).join('');
+    tip.style.display='block';tip.style.position='absolute';let tx=ev.clientX+14;if(tx+190>window.innerWidth)tx=ev.clientX-190;tip.style.left=tx+'px';tip.style.top=(ev.clientY+14+window.scrollY)+'px';
+  });
+  hit.addEventListener('mouseleave',()=>{cx.setAttribute('opacity',0);tip.style.display='none'});
+}
+const ser=(id,names,key='per')=>names.map(n=>({name:LAB[n]||n,color:COL[n]||'var(--s4)',pts:S(id,n).map(p=>({x:p.x,y:p[key]}))}));
+const SNRX='SNR на відлік, дБ';
+
+/* ---------- derived numbers ---------- */
+const T1={}, T10={};
+['awgn','mp2','mp3','echo120','rician','rayleigh20','rayleigh200'].forEach(id=>{
+  T1[id]={};T10[id]={};
+  Object.keys(E(id).series).forEach(n=>{T1[id][n]=thr(S(id,n),.01);T10[id][n]=thr(S(id,n),.10)});
+});
+const gain=(id,lim=.01)=>{const a=(lim===.01?T1:T10)[id];return (a.current!=null&&a.new!=null)?a.current-a.new:null};
+const maxX=id=>Math.max(...S(id,'current').map(p=>p.x));
+const gAW=gain('awgn'), gMP2=gain('mp2'), gMP3=gain('mp3');
+const FSn=-174+10*Math.log10(30.72e6);
+
+/* ---------- hero ---------- */
+$('#stats').innerHTML=[
+ [gAW!=null?gAW.toFixed(0)+' дБ':'–','менший потрібний SNR для PER ≤ 1 % у чистому каналі ('+T1.awgn.current+' → '+T1.awgn.new+' дБ)'],
+ [gMP2!=null?gMP2.toFixed(0)+' дБ':'–','те саме з двома променями ('+T1.mp2.current+' → '+T1.mp2.new+' дБ)'],
+ [T1.mp3.new!=null?(T1.mp3.current==null?'> '+(maxX('mp3')-T1.mp3.new).toFixed(0)+' дБ':(T1.mp3.current-T1.mp3.new).toFixed(0)+' дБ'):'–','з трьома променями: поточний PHY '+(T1.mp3.current==null?'не досягає 1 % до '+maxX('mp3')+' дБ':'потребує '+T1.mp3.current+' дБ')+', новий '+T1.mp3.new+' дБ'],
+ [gAW!=null?'× '+Math.pow(10,gAW/20).toFixed(1):'–','у дальності у вільному просторі (6 дБ = × 2), лише в AWGN']
+].map(a=>`<div class="stat"><b>${a[0]}</b><span>${a[1]}</span></div>`).join('');
+const SEC=['Конфігурація','Архітектура','LDPC','MMSE','Синхронізація','SNR і якість','PER проти SNR','Дефекти','Throughput','Ресурси','Link budget','Дальність','Current vs New','Висновки'];
+$('#idx').innerHTML=SEC.map((s,i)=>`<a href="#s${i+1}">${i+1} ${s}</a>`).join('');
+
+/* ---------- 1 configuration ---------- */
+const cfgRows=[
+ ['Платформа','Zynq-7020, xc7z020clg400-1 (Nano SDR Pluto). Design not targeted for Zynq-7010','Zynq-7010 xc7z010clg400-1'],
+ ['Частота дискретизації / FFT / CP','30.72 MS/s, 2048, 144 відліки (символ 2192), 1200 активних піднесучих, 100 пілотів','те саме'],
+ ['Модуляція','16-QAM (Gray)','16-QAM (Gray)'],
+ ['Кодування','LDPC QC, R = 5/6, N = 2160, K = 1800, Z = 60, layered normalised min-sum, до 10 ітерацій','немає'],
+ ['Корисне навантаження на символ','450 байт (2 кодові слова по 225 байт)','550 байт'],
+ ['Демодуляція','max-log soft LLR 6 біт з вагою на піднесучу, per-bin параметри з MMSE-движка','жорсткі рішення'],
+ ['Еквалайзер','MMSE (перемикається на ZF), LS-оцінка по LTS, шум по guard-бінах','ZF'],
+ ['Синхронізація','Шмідль-Кокс (coarse) + fine timing по LTS (фазовий нахил H) + стеження за SFO по пілотах + CPE, DC-фільтр K = 16','Шмідль-Кокс + CPE, DC-фільтр K = 12'],
+ ['Ціль таймінгу','8 нс (125 МГц); у xsim-прогонах 2 такти на відлік','8 нс'],
+ ['Інструменти','Vivado 2025.2 (синтез, xsim), Python-моделі, phy_sim','те саме'],
+ ['Статистика симуляції','PER: '+DATA.compare.runs*10+' пакетів на точку (в завмираннях менше незалежних реалізацій каналу)','те саме']];
+$('#cfg').innerHTML='<table><thead><tr><th>Параметр</th><th>New PHY</th><th>Current PHY</th></tr></thead><tbody>'+cfgRows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('')+'</tbody></table>';
+
+/* ---------- 2 architecture ---------- */
+const flow=(items)=>`<div class="flow">`+items.map((x,i)=>(i?'<span class="a">→</span>':'')+`<span class="b ${x[1]||''}">${x[0]}</span>`).join('')+`</div>`;
+$('#arch').innerHTML=`<h3>TX</h3>`+flow([['байти'],['скремблер'],['LDPC кодер R=5/6','new'],['інтерлівер (символ)','chg'],['16-QAM'],['піло­ти + преамбула'],['IFFT 2048'],['CP + масштаб'],['DAC']])+
+`<h3>RX</h3>`+flow([['ADC'],['DC (K=16)','chg'],['Шмідль-Кокс'],['CFO / NCO'],['вікно + FFT'],['LS-оцінка каналу'],['шум по guard-бінах','new'],['MMSE движок + параметри LLR','new'],['еквалайзер'],['CPE + нахил SFO','new'],['soft LLR','new'],['деінтерлівер','chg'],['LDPC декодер','new'],['дескремблер'],['пакет → DMA (заголовок v3)','chg']])+
+`<h3>Паралельно</h3>`+flow([['тайминг по LTS (фазовий нахил H)','new'],['цикл зсуву вікна між пакетами','new'],['SNR avg / min, погані піднесучі','new'],['статистика LDPC (ітерації, невдачі)','new']])+
+`<div class="key"><span><i style="background:color-mix(in srgb,var(--accent) 25%,var(--surface));border-color:var(--accent)"></i>новий блок</span><span><i style="background:color-mix(in srgb,var(--warn) 25%,var(--surface));border-color:var(--warn)"></i>змінений</span></div>`;
+
+/* ---------- 3 LDPC ---------- */
+$('#ldpc_sub').innerHTML='Код 6×36 блоків по 60 бітів (802.11n-подібна структура, кодування накопиченням). Декодер: Z-паралельний layered normalised min-sum (множник 0.75), LLR 6 біт, повідомлення 8 біт, дострокове завершення після 6 чистих шарів, до 10 ітерацій, дві пам’яті LLR (завантаження, декодування і видача перекриваються). Нижче FER і число ітерацій, виміряні на бітово-точній моделі RTL.';
+lineChart($('#ch_fer'),{title:'FER (кодове слово) проти SNR, чистий канал',note:'новий PHY',xlabel:SNRX,series:[{name:'FER',color:'var(--s2)',pts:S('awgn','new').map(p=>({x:p.x,y:p.fer}))},{name:'PER (пакет)',color:'var(--s5)',pts:S('awgn','new').map(p=>({x:p.x,y:p.per}))}],maxticks:12,hlines:[{y:.01,label:'1 %'}]});
+lineChart($('#ch_iter'),{title:'Середнє число ітерацій LDPC',note:'чистий канал',xlabel:SNRX,series:[{name:'ітерацій',color:'var(--s2)',pts:S('awgn','new').map(p=>({x:p.x,y:p.iters}))}],ymax:10,yticks:[0,.25,.5,.75,1],yfmt:v=>v.toFixed(0),vfmt:v=>v==null?'–':v.toFixed(1),maxticks:12});
+{const rows=[['Код','R = 5/6, N = 2160, K = 1800, два кодових слова на OFDM-символ (450 байт)'],['Декодер','10 ітерацій макс., нормалізація 0.75, LLR 6 біт, L/Q 8 біт'],['RTL проти моделі','бітово-точно: 10 слів (чисті, межові, невдалі, нульові LLR) у tb_phy_ldpc_dec; кодер 2200 ніблів у tb_phy_ldpc_enc; повний ланцюг у системних TB'],['Ітерацій при SNR 13 дБ (поріг PER 1 %)',f1(S('awgn','new').find(p=>p.x===13)?.iters)],['Ітерацій при SNR 30 дБ',f1(S('awgn','new').find(p=>p.x===30)?.iters)]];
+$('#ldpc_tbl').innerHTML='<table><tbody>'+rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')+'</tbody></table>'}
+
+/* ---------- 4 MMSE ---------- */
+{const g2=T1.mp2.new_zf!=null&&T1.mp2.new!=null?(T1.mp2.new_zf-T1.mp2.new):null, g3=T1.mp3.new_zf!=null&&T1.mp3.new!=null?(T1.mp3.new_zf-T1.mp3.new):null;
+$('#mmse_sub').innerHTML='MMSE-вага W = H*/(|H|² + σ²) реалізована як вага по піднесучих плюс пост-движок після LTS (σ² з guard-бінів); ZF лишається як reference. LLR рахується з урахуванням зсуву MMSE, тому при точних LLR з вагою по піднесучих ZF і MMSE майже еквівалентні: різниця '+(g2==null?'–':g2.toFixed(1))+' дБ (2 промені) і '+(g3==null?'–':g3.toFixed(1))+' дБ (3 промені) за SNR для PER ≤ 1 %. Вигода нового PHY в багатопроменевості дається в основному LDPC і вагою LLR; MMSE важливіший, коли LLR рахуються без ваги.';
+lineChart($('#ch_mp2'),{title:'2 промені (0.36 мкс, −6 дБ)',xlabel:SNRX,series:ser('mp2',['current','new_zf','new']),maxticks:12});
+lineChart($('#ch_mp3'),{title:'3 промені (0 / 0.33 / 0.81 мкс)',xlabel:SNRX,series:ser('mp3',['current','new_zf','new']),maxticks:12});
+const rows=['mp2','mp3','rayleigh20','rician'].map(id=>[E(id).title,T1[id].current,T1[id].new_zf,T1[id].new,T10[id].current,T10[id].new_zf,T10[id].new]);
+const fx=v=>v==null?'не досягнуто':v;
+$('#mmse_tbl').innerHTML='<table><thead><tr><th>Канал</th><th class="n">Current<br>PER ≤ 1 %</th><th class="n">New ZF</th><th class="n">New MMSE</th><th class="n">Current<br>PER ≤ 10 %</th><th class="n">New ZF</th><th class="n">New MMSE</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${r[0]}</td>${r.slice(1).map(v=>`<td class="n">${fx(v)}</td>`).join('')}</tr>`).join('')+'</tbody></table><p class="note" style="margin-top:8px">SNR на відлік, дБ, найменше значення, з якого PER не перевищує поріг на всіх вищих точках (до '+maxX('mp2')+' дБ).</p>'}
+
+/* ---------- 5 synchronization ---------- */
+lineChart($('#ch_sfo8'),{title:'SFO, пакет із 8 символів',note:'SNR 28 дБ',xlabel:'відхилення тактової частоти, ppm',series:ser('sfo8',['current','new']),ordinal:true,xfmt:x=>x,maxticks:8});
+lineChart($('#ch_sfo2'),{title:'SFO, пакет із 2 символів',note:'SNR 28 дБ',xlabel:'відхилення тактової частоти, ppm',series:ser('sfo2',['current','new']),ordinal:true,maxticks:8});
+lineChart($('#ch_cfo28'),{title:'CFO при SNR 28 дБ',xlabel:'CFO, кГц',series:ser('cfo28',['current','new']),xfmt:x=>x/1000,maxticks:9});
+lineChart($('#ch_cfo22'),{title:'CFO при SNR 22 дБ',xlabel:'CFO, кГц',series:ser('cfo22',['current','new']),xfmt:x=>x/1000,maxticks:9});
+{const s8=S('sfo8','new'),s2=S('sfo2','new');
+const lim=(id,n,l)=>{const p=S(id,n).filter(q=>q.per<=l).map(q=>q.x);return p.length?Math.max(...p):'–'};
+$('#sync_sub').innerHTML='SFO-стеження: нахил фази по частоті з пілотів на кожному символі (метод найменших квадратів), поворот кожного біна на θ + s·f. CFO: residual CFO оцінюється зі зміни CPE-кута між символами і компенсується покадрово CPE-трекером; NCO не перепідлаштовується. Тайминг: по фазовому нахилу LTS, цикл зсуву вікна між пакетами.';
+const mean=(arr,k)=>{const v=arr.map(p=>p[k]).filter(x=>x!=null);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null};
+const pool=['awgn','mp2','mp3'].flatMap(id=>S(id,'new').filter(p=>p.per<=.1));
+const rows=[['Fine timing: похибка оцінки τ (середня за точками з PER ≤ 10 %)',f2(mean(pool,'ftim'))+' відліку'],
+ ['Макс. похибка CFO coarse (SNR ≥ 22 дБ, CFO до ±16 кГц)', (()=>{const v=S('cfo28','new').filter(p=>Math.abs(p.x)<=14000).map(p=>p.cfo_err).filter(x=>x!=null);return v.length?f1(Math.max(...v))+' Гц':'–'})()],
+ ['Оцінка residual CFO по CPE (пакети з 2–8 символів, середнє)',f1(mean(S('sfo8','new'),'cfo_res'))+' Гц'],
+ ['Похибка оцінки SFO (8 символів, 5–40 ppm)',f2(mean(S('sfo8','new').filter(p=>p.x>0),'sfo_err'))+' ppm'],
+ ['Максимальне SFO при PER ≤ 1 %, 8 символів: current / new',lim('sfo8','current',.01)+' / '+lim('sfo8','new',.01)+' ppm'],
+ ['Максимальне SFO при PER ≤ 1 %, 2 символи: current / new',lim('sfo2','current',.01)+' / '+lim('sfo2','new',.01)+' ppm']];
+$('#sync_tbl').innerHTML='<table><tbody>'+rows.map(r=>`<tr><td>${r[0]}</td><td class="n">${r[1]}</td></tr>`).join('')+'</tbody></table>'}
+
+/* ---------- 6 SNR estimate ---------- */
+$('#q_sub').innerHTML='Оцінка з LTS: потужність сигналу по піднесучих |G|², потужність шуму з guard-бінів. SNR на піднесучу = |G|²/ν (код log2×32, 0.094 дБ на крок). У заголовку пакета: середній SNR, мінімальний SNR, число поганих піднесучих (SNR < 10 дБ), код шуму, EVM по пілотах.';
+lineChart($('#ch_snrest'),{title:'Оцінений SNR каналу проти заданого',note:'AWGN; пунктир: задане + 2.3 дБ (1200 піднесучих × 15 кГц = 18 МГц сигналу при шумі в смузі 30.72 МГц)',xlabel:'заданий SNR на відлік, дБ',ymax:50,yticks:[0,.2,.4,.6,.8,1],yfmt:v=>v.toFixed(0),vfmt:v=>v==null?'–':v.toFixed(1)+' дБ',diag:x=>x+2.3,series:[{name:'оцінка (середнє)',color:'var(--s2)',pts:S('awgn','new').map(p=>({x:p.x,y:p.chan_snr}))},{name:'мінімум по піднесучих',color:'var(--s5)',pts:S('awgn','new').map(p=>({x:p.x,y:p.snr_min}))}],maxticks:12});
+lineChart($('#ch_badsc'),{title:'Погані піднесучі (SNR < 10 дБ) у середньому на пакет',note:'канали з провалами',xlabel:SNRX,ymax:Math.max(10,...['mp3','rayleigh20','echo120'].flatMap(id=>S(id,'new').map(p=>p.bad_sc||0))),yticks:[0,.25,.5,.75,1],yfmt:v=>v.toFixed(0),vfmt:v=>v==null?'–':v.toFixed(1),series:['mp3','rayleigh20','echo120'].map((id,i)=>({name:E(id).title,color:['var(--s2)','var(--s4)','var(--s3)'][i],pts:S(id,'new').map(p=>({x:p.x,y:p.bad_sc}))})),maxticks:12});
+
+/* ---------- 7 PER vs SNR ---------- */
+lineChart($('#ch_awgn'),{title:'Чистий канал (AWGN)',xlabel:SNRX,series:ser('awgn',['current','new']),hlines:[{y:.01,label:'1 %'}],maxticks:15});
+const chs=['awgn','mp2','mp3','echo120','rician','rayleigh20','rayleigh200'];
+lineChart($('#ch_snr1'),{title:'SNR для PER ≤ 1 % за каналами',note:'нижче краще; відсутній маркер = не досягнуто',ordinal:true,ymax:36,yticks:[0,.25,.5,.75,1],yfmt:v=>v.toFixed(0),vfmt:v=>v==null?'не досягнуто':v+' дБ',xfmt:x=>x,
+  series:['current','new'].map(n=>({name:LAB[n],color:COL[n],pts:chs.map((id,i)=>({x:['AWGN','2 пр.','3 пр.','ехо 3.9','Райс','Релей20','Релей200'][i],y:T1[id][n]}))}))});
+{const lab=id=>E(id).title;
+$('#thr_tbl').innerHTML='<table><thead><tr><th>Канал</th><th class="n">Current<br>≤ 1 %</th><th class="n">New<br>≤ 1 %</th><th class="n">Виграш, дБ</th><th class="n">Current<br>≤ 10 %</th><th class="n">New<br>≤ 10 %</th><th class="n">Виграш, дБ</th></tr></thead><tbody>'+chs.map(id=>{const g1=gain(id),g10=gain(id,.1);const mx=maxX(id);
+ return `<tr><td>${lab(id)}</td><td class="n">${T1[id].current??('> '+mx)}</td><td class="n">${T1[id].new??('> '+mx)}</td><td class="n">${g1!=null?g1.toFixed(0):(T1[id].new!=null?'> '+(mx-T1[id].new).toFixed(0):'–')}</td><td class="n">${T10[id].current??('> '+mx)}</td><td class="n">${T10[id].new??('> '+mx)}</td><td class="n">${g10!=null?g10.toFixed(0):(T10[id].new!=null?'> '+(mx-T10[id].new).toFixed(0):'–')}</td></tr>`}).join('')+'</tbody></table><p class="note" style="margin-top:8px">«> N» означає, що в діапазоні симуляції (до '+maxX('awgn')+' дБ) поріг не досягнуто, а виграш оцінено знизу.</p>'}
+
+/* ---------- 8 impairments ---------- */
+{const defs=[['echo120','Ехо 3.9 мкс','SNR, дБ',x=>x,'snr'],['rayleigh200','Релей, допплер 200 Гц','SNR, дБ',x=>x,'snr'],['iq','Дисбаланс I/Q (фаза, °)','°',x=>x],['pa','Стиск підсилювача (back-off, дБ)','дБ',x=>x],['pn','Фазовий шум (ширина лінії, Гц)','Гц',x=>x],['adc','Рівень АЦП (rms, LSB)','LSB',x=>x],['tone','Тон завади +1 МГц (SIR, дБ)','дБ',x=>x]];
+const host=$('#imp');defs.forEach(([id,t,u,xf,mode])=>{const d=document.createElement('div');d.className='card chart';host.appendChild(d);lineChart(d,{title:t,xlabel:u,series:ser(id,['current','new']),ordinal:mode!=='snr',xfmt:xf,h:215,maxticks:9})})}
+
+/* ---------- 9 throughput ---------- */
+{const sym=2192/30.72e6, rows=[1,2,4,8].map(n=>{const cur=n*550*8/((n+2)*sym)/1e6, nw=n*450*8/((n+2)*sym)/1e6;return [n+' символів',cur,nw,n*550,n*450]});
+$('#thr_rate').innerHTML='<h3 style="margin-bottom:8px">Корисна швидкість PHY (payload / тривалість кадру з преамбулою)</h3><table><thead><tr><th>Пакет</th><th class="n">Current, байт</th><th class="n">Current, Мбіт/с</th><th class="n">New, байт</th><th class="n">New, Мбіт/с</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${r[0]}</td><td class="n">${r[3]}</td><td class="n">${r[1].toFixed(1)}</td><td class="n">${r[4]}</td><td class="n">${r[2].toFixed(1)}</td></tr>`).join('')+'</tbody></table><p class="note" style="margin-top:8px">Довгий пакет: Current 550 байт на символ дає 61.7 Мбіт/с, New 450 байт на символ (R = 5/6 із 1100 бітів на символ під кодом) дає 50.5 Мбіт/с. Кадр: 2 символи преамбули + дані; без накладних витрат MAC.</p>'}
+{const ok=RTL.filter(r=>r.metrics);
+$('#rtl_tbl').innerHTML='<h3 style="margin-bottom:8px">RTL у xsim: TX (RTL) → канал → RX (RTL), перевірка проти бітово-точної моделі</h3><table><thead><tr><th>Сценарій</th><th>PHY</th><th class="n">PER</th><th class="n">BER</th><th class="n">EVM, %</th><th class="n">ітерацій LDPC (серед.)</th><th class="n">SNR каналу, дБ</th><th class="n">затримка RX, мкс</th><th class="n">перевірок моделі</th></tr></thead><tbody>'+ok.map(r=>{const m=r.metrics,p=m.rtl_performance||{};return `<tr><td>${r.name}</td><td>${r.mode==='new'?'New':'Current'}</td><td class="n">${f2(m.per)}</td><td class="n">${m.ber==null?'–':m.ber.toExponential(1)}</td><td class="n">${f1(m.evm_rms_pct)}</td><td class="n">${f1(m.ldpc_iterations_mean)}</td><td class="n">${f1(m.channel_snr_db_mean)}</td><td class="n">${f1(p.rx_packet_latency_us)}</td><td class="n">${r.model_checks.ok}/${r.model_checks.total}</td></tr>`}).join('')+'</tbody></table><p class="note" style="margin-top:8px">Затримка RX = від останнього відліку вікна до першого слова пакета, при двох тактах на відлік. Перевірки моделі: кількість пакетів, payload, n_best, приріст NCO, сузір’я.</p>'}
+
+/* ---------- 10 resources ---------- */
+{const R=RES,B=BASE;const row=(n,u,t,tag)=>`<tr><td>${n}</td><td>${tag}</td><td class="n">${u.lut}</td><td class="n">${u.ff}</td><td class="n">${u.bram}</td><td class="n">${u.dsp}</td><td class="n">${t.wns>=0?'+':''}${t.wns.toFixed(2)}</td><td class="n">${t.whs>=0?'+':''}${t.whs.toFixed(2)}</td><td class="n">${t.fmax.toFixed(0)}</td></tr>`;
+const nz=v=>({lut:v.util.lut,ff:v.util.ff,bram:v.util.bram,dsp:v.util.dsp});
+const mk=(v,tag)=>row(v==='rx'?'RX (разом із платформою)':'TX (разом із платформою)',nz(R[v]),{wns:R[v].timing.wns,whs:R[v].timing.whs,fmax:R[v].timing.fmax_mhz},tag);
+$('#res_sub').innerHTML='Цілі Vivado 2025.2: l_clk 8 нс (125 МГц). Ємність Z7020: 53200 LUT, 106400 FF, 140 BRAM, 220 DSP; Z7010: 17600 LUT, 35200 FF, 60 BRAM, 80 DSP.';
+$('#res_tbl').innerHTML='<table><thead><tr><th>Дизайн</th><th>Платформа</th><th class="n">LUT</th><th class="n">FF</th><th class="n">BRAM (36k)</th><th class="n">DSP</th><th class="n">WNS, нс</th><th class="n">WHS, нс</th><th class="n">Fmax, МГц</th></tr></thead><tbody>'+
+ mk('tx','New, Z7020')+mk('rx','New, Z7020')+
+ row('TX (Current)',B.tx.util,B.tx.timing,'Current, Z7010')+row('RX (Current)',B.rx.util,B.rx.timing,'Current, Z7010')+'</tbody></table><p class="note" style="margin-top:8px">Fmax = 1/(8 нс − WNS), оцінка за запасом на цільовій частоті. Current RX на Z7010 займав 98.9 % slice, новий дизайн на Z7020 використовує '+(R.rx.util.slice?(R.rx.util.slice/133).toFixed(0):'–')+' % slice.</p>';
+const hi=(RES.rx.hier||[]).concat((RES.tx.hier||[]).map(h=>({...h,inst:'TX '+h.inst})));
+const pick=['u_ldpc','u_enc','u_dm','u_nse','u_post','u_chest','u_eq','u_trk','u_fft','u_sync','u_deint','u_il','u_pkt','u_regs'];
+const rows=pick.map(n=>{const h=(RES.rx.hier||[]).find(x=>x.inst===n)||(RES.tx.hier||[]).find(x=>x.inst===n);return h?`<tr><td>${n}</td><td>${h.module.replace(/^system_phy_(rx|tx)_0_/,'')}</td><td class="n">${h.lut}</td><td class="n">${h.ff}</td><td class="n">${h.bram36}</td><td class="n">${h.dsp}</td></tr>`:''}).join('');
+$('#res_hier').innerHTML='<h3 style="margin-bottom:8px">Блоки PHY (після імплементації)</h3><table><thead><tr><th>Екземпляр</th><th>Модуль</th><th class="n">LUT</th><th class="n">FF</th><th class="n">BRAM36</th><th class="n">DSP</th></tr></thead><tbody>'+rows+'</tbody></table>'}
+
+/* ---------- 11 link budget ---------- */
+const F=[['f','Частота, МГц',2450,10],['p','Потужність TX, дБм',7,1],['gt','Антена TX, дБі',2,.5],['gr','Антена RX, дБі',2,.5],['nf','Шумовий фактор RX, дБ',4,.5],['m','Запас на завмирання, дБ',10,1]];
+$('#fields').innerHTML=`<label>Канал і поріг<select id="c_ch">${chs.map(id=>`<option value="${id}">${E(id).title}</option>`).join('')}</select></label><label>Поріг PER<select id="c_lim"><option value="1">≤ 1 %</option><option value="10">≤ 10 %</option></select></label>`+F.map(([k,t,v,s])=>`<label>${t}<input id="c_${k}" type="number" step="${s}" value="${v}"></label>`).join('');
+function lb(snr,f,p,gt,gr,nf,m){const sens=FSn+nf+snr,pl=p+gt+gr-sens-m,d=Math.pow(10,(pl-32.44-20*Math.log10(f))/20);return{sens,pl,d}}
+const fmtD=d=>d>=1?d.toFixed(d<10?1:0)+' км':Math.round(d*1000)+' м';
+function calc(){const id=$('#c_ch').value,lim=$('#c_lim').value==='1'?.01:.10;const v=k=>+$('#c_'+k).value;const T=(lim===.01?T1:T10)[id];
+ const row=n=>{if(T[n]==null)return null;return lb(T[n],v('f'),v('p'),v('gt'),v('gr'),v('nf'),v('m'))};
+ const a=row('current'),b=row('new');
+ $('#c_out').innerHTML=`<div class="kicker">Дальність у вільному просторі, New PHY</div><div class="big">${b?fmtD(b.d).split(' ')[0]:'–'}<small>${b?fmtD(b.d).split(' ')[1]:''}</small></div>
+ <div class="kv"><span>Мінімальна потужність RX, New</span><span>${b?b.sens.toFixed(1)+' дБм':'–'}</span></div>
+ <div class="kv"><span>Допустимі втрати на трасі, New</span><span>${b?b.pl.toFixed(1)+' дБ':'–'}</span></div>
+ <div class="kv"><span>Поріг SNR New / Current</span><span>${T.new??'–'} / ${T.current??'> '+maxX(id)} дБ</span></div>
+ <div class="kv"><span>Current: мін. RX / дальність</span><span>${a?a.sens.toFixed(1)+' дБм / '+fmtD(a.d):'поріг не досягнуто'}</span></div>
+ <div class="kv"><span>Запас по дальності New / Current</span><span>${(a&&b)?'× '+(b.d/a.d).toFixed(1)+' ('+(T.current-T.new).toFixed(0)+' дБ)':(b&&T.new!=null?'> × '+Math.pow(10,((maxX(id)-T.new))/20).toFixed(1):'–')}</span></div>`}
+document.querySelectorAll('.fields input,.fields select').forEach(e=>e.addEventListener('input',calc));calc();
+
+/* ---------- 12 range margin ---------- */
+{const pr=[['Pluto як є: +7 дБм, антени 2 дБі',7,2,2],['PA +20 дБм, антени 5 дБі',20,5,5],['PA +30 дБм, антени 10 дБі',30,10,10]];
+const rows=[];['awgn','mp2','mp3'].forEach(id=>pr.forEach(p=>{[900,2450].forEach(f=>{const a=T1[id].current!=null?lb(T1[id].current,f,p[1],p[2],p[3],4,10):null,b=T1[id].new!=null?lb(T1[id].new,f,p[1],p[2],p[3],4,10):null;
+ rows.push(`<tr><td>${E(id).title}</td><td>${p[0]}</td><td class="n">${f}</td><td class="n">${a?fmtD(a.d):'> '+maxX(id)+' дБ'}</td><td class="n">${b?fmtD(b.d):'–'}</td><td class="n">${(a&&b)?'× '+(b.d/a.d).toFixed(1):'–'}</td></tr>`)})}));
+$('#range_tbl').innerHTML='<table><thead><tr><th>Канал</th><th>Конфігурація</th><th class="n">МГц</th><th class="n">Current, дальність</th><th class="n">New, дальність</th><th class="n">Відношення</th></tr></thead><tbody>'+rows.join('')+'</tbody></table><p class="note" style="margin-top:8px">PER ≤ 1 %, NF 4 дБ, запас 10 дБ, вільний простір (верхня межа). Виграш у dB взято з розділу 7, наперед не задавався.</p>'}
+
+/* ---------- 13 comparison ---------- */
+{const g=(id,n,l=.01)=>(l===.01?T1:T10)[id][n];
+const rows=[['SNR для PER ≤ 1 %, AWGN, дБ',g('awgn','current'),g('awgn','new')],['SNR для PER ≤ 1 %, 2 промені, дБ',g('mp2','current'),g('mp2','new')],['SNR для PER ≤ 1 %, 3 промені, дБ',g('mp3','current')??('> '+maxX('mp3')),g('mp3','new')],['SNR для PER ≤ 10 %, Релей 20 Гц, дБ',g('rayleigh20','current',.1)??('> '+maxX('rayleigh20')),g('rayleigh20','new',.1)??('> '+maxX('rayleigh20'))],
+['Макс. SFO без втрат (8 символів), ppm',(()=>{const p=S('sfo8','current').filter(q=>q.per<=.01).map(q=>q.x);return p.length?Math.max(...p):'–'})(),(()=>{const p=S('sfo8','new').filter(q=>q.per<=.01).map(q=>q.x);return p.length?Math.max(...p):'–'})()],
+['Корисне навантаження на OFDM-символ, байт',550,450],['Корисна швидкість, 8 символів, Мбіт/с',(8*550*8/(10*2192/30.72e6)/1e6).toFixed(1),(8*450*8/(10*2192/30.72e6)/1e6).toFixed(1)],
+['Оцінка SNR / якості каналу','немає','є (середній, мінімум, погані піднесучі)'],['Fine timing / SFO / residual CFO','CPE тільки','є'],
+['LUT, RX (повний дизайн)',BASE.rx.util.lut+' (Z7010)',RES.rx.util.lut+' (Z7020)'],['DSP, RX',BASE.rx.util.dsp+' / 80',RES.rx.util.dsp+' / 220'],['Fmax RX, МГц (за WNS)',BASE.rx.timing.fmax.toFixed(0),RES.rx.timing.fmax_mhz.toFixed(0)]];
+$('#cmp_tbl').innerHTML='<table><thead><tr><th>Метрика</th><th class="n">Current PHY</th><th class="n">New PHY</th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${r[0]}</td><td class="n">${r[1]}</td><td class="n">${r[2]}</td></tr>`).join('')+'</tbody></table>'}
+
+/* ---------- 14 conclusions ---------- */
+$('#concl').innerHTML=[
+ `<b>Головний результат.</b> Потрібний SNR для PER ≤ 1 % зменшився на <b>${gAW!=null?gAW.toFixed(0):'–'} дБ</b> у чистому каналі (${T1.awgn.current} → ${T1.awgn.new} дБ на відлік) і на <b>${gMP2!=null?gMP2.toFixed(0):'–'} дБ</b> з двома променями (${T1.mp2.current} → ${T1.mp2.new} дБ). З трьома променями поточний PHY ${T1.mp3.current==null?'не досягає 1 % до '+maxX('mp3')+' дБ':'потребує '+T1.mp3.current+' дБ'}, новий потребує ${T1.mp3.new} дБ. У каналах із завмиранням Релея новий PHY переходить із «не працює» у «працює» при ${T10.rayleigh20.new??'–'} дБ (PER ≤ 10 %).`,
+ `<b>Дальність.</b> Додатковий link budget дорівнює виграшу в SNR: ${gAW!=null?gAW.toFixed(0)+' дБ → × '+Math.pow(10,gAW/20).toFixed(1)+' у вільному просторі в AWGN':''}${gMP2!=null?'; '+gMP2.toFixed(0)+' дБ → × '+Math.pow(10,gMP2/20).toFixed(1)+' з двома променями':''}. Значення з розділів 11–12; воно залежить від P_tx, антен і запасу.`,
+ `<b>Ціна.</b> Корисне навантаження на символ 450 байт замість 550, швидкість 50.5 Мбіт/с (довгі пакети) проти 61.7. Додатково ≈ ${((RES.rx.util.lut-BASE.rx.util.lut)/1000).toFixed(0)}k LUT у RX і ≈ ${((RES.tx.util.lut-BASE.tx.util.lut)/1000).toFixed(0)}k LUT у TX. RX займає ${(RES.rx.util.slice/133).toFixed(0)} % slice Z7020 (${(RES.rx.util.lut/532).toFixed(0)} % LUT), тож запасу під додаткові блоки майже немає: рішення про зменшення декодера (≈ 20k LUT) варто розглянути. Дизайн вимагає Z7020.`,
+ `<b>Тайминг і SFO.</b> Стеження за SFO по нахилу фази пілотів прибрало втрати довгих пакетів: 8 символів тепер працюють до ${(()=>{const p=S('sfo8','new').filter(q=>q.per<=.01).map(q=>q.x);return p.length?Math.max(...p):'–'})()} ppm (current: ${(()=>{const p=S('sfo8','current').filter(q=>q.per<=.01).map(q=>q.x);return p.length?Math.max(...p):'–'})()} ppm).`,
+ `<b>Дефекти радіотракту.</b> Стиск підсилювача: новий PHY працює від back-off 1 дБ, поточний від 6 дБ. Тон завади +1 МГц: новий витримує SIR 20 дБ, поточний ні вже при 30 дБ. Фазовий шум: новий до ≈ 100 Гц (PER 10 %), поточний до ≈ 30 Гц. Дисбаланс I/Q до 12° новий, поточний ламається на 12°. CFO: обидва PHY тримають ±14 кГц, ±16 кГц поза діапазоном грубої оцінки в обох. Рівень АЦП: обидва втрачають при 120 LSB rms і нижче, новий ще тримає 1000 LSB.`,
+ `<b>Не перевірено.</b> На реальному залізі нічого не запускалось. Оцінка дальності це вільний простір; AGC, FEC на низьких профілях (QPSK) і адаптивний MCS не реалізовані.`].map(x=>`<li>${x}</li>`).join('');
+$('#method').innerHTML=[
+ 'Приймач: бітово-точні моделі RTL (`phy2_fixed_ref`, `ldpc_fixed_ref`, `rx_fixed_ref`) через phy_sim; передавач: бітово-точна модель TX. Канал: AWGN, багатопроменевість, завмирання Релея/Райса, CFO, SFO, фазовий шум, дисбаланс I/Q, стиск підсилювача, АЦП 12 біт.',
+ 'PER рахує і помилкові, і пропущені детектором пакети. Поріг: найменший SNR, з якого PER не перевищує ліміт на всіх вищих точках.',
+ 'RTL: 41 самоперевіряючий тестбенч (регресія), системні TX/RX із заголовком v3, RTL-в-циклі через phy_sim. RTL-приймач збігається з моделлю по payload, n_best, приросту NCO.',
+ 'Vivado: проєкти nano_sdr_pluto_ofdm_{rx,tx}, xc7z020clg400-1, стратегія Performance_ExplorePostRoutePhysOpt. Звіти в `nano_sdr_pluto_ofdm_*/reports_*.rpt`.',
+ 'Виявлено й виправлено під час RTL-прогонів: початок вікна FFT міг опинитися в минулому на момент арму (детектор оголошує пакет до TRACK_LEN відліків після піка), через що при низькому SNR RTL губив пакети, а модель ні. Додано затримку WIN_DELAY = 48 відліків перед вікном. Таймінг RX закрито конвеєруванням tracker/tau/post/декодера та перенесенням ваг каналу в блочну RAM.',
+ 'Відтворення: `python experiments/phy_compare.py`, `rtl_runs.py`, `collect_resources.py`, `build_phy_report.py` у `phy_sim/`.'].map(x=>`<li>${x.replace(/`([^`]+)`/g,'<code>$1</code>')}</li>`).join('');
+</script>

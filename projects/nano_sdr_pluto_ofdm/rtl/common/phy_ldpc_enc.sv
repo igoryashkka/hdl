@@ -24,7 +24,7 @@ module phy_ldpc_enc
   localparam int NBYTES = LK / 8;           // 225
   localparam int NNIB   = LN / 4;           // 540
 
-  typedef enum logic [2:0] {E_LOAD, E_LAM, E_PAR, E_PACK, E_OUT, E_FILL} st_t;
+  typedef enum logic [2:0] {E_LOAD, E_LAM, E_DRAIN, E_PAR, E_PACK, E_OUT, E_FILL} st_t;
   st_t st;
 
   logic [LK-1:0]   u;                        // information bits, first bit at the MSB
@@ -38,23 +38,39 @@ module phy_ldpc_enc
   logic [4:0]      fcnt;
   logic [2:0]      pstep;
 
+  logic         iss, clr_lam;
   assign in_ready = (st == E_LOAD);
+  assign iss      = (st == E_LAM);
+  assign clr_lam  = (st == E_LOAD);
 
-  // column vector (bit r = information bit 60 c + r) and rotation out[r] = in[(r + s) % Z]
-  logic [5:0]   e_col, e_sh;
-  logic [Z-1:0] cvec, rv;
+  // column vector (bit r = information bit 60 c + r) and rotation out[r] = in[(r + s) % Z]: 4-stage pipeline (ROM, column mux, rotate, XOR)
   logic [Z-1:0] ucol [LKB];                  // constant slices of the information register (column mux, no variable shifter)
   always_comb for (int c = 0; c < LKB; c++) for (int r = 0; r < Z; r++) ucol[c][r] = u[LK - 1 - 60 * c - r];
-  always_comb begin
-    e_col = enc_col(int'(row), int'(ent));
-    e_sh  = enc_sh(int'(row), int'(ent));
-    cvec = ucol[e_col];
-    rv = cvec;
-    for (int s = 0; s < 6; s++) begin
+  logic         q0_v, q1_v, q2_v;
+  logic [5:0]   q0_col, q0_sh, q1_sh;
+  logic [2:0]   q0_row, q1_row, q2_row;
+  logic [Z-1:0] q1_cv, q2_rv;
+  logic [2:0]   dcnt;
+  always_ff @(posedge clk) begin
+    q0_v <= iss; q0_col <= enc_col(int'(row), int'(ent)); q0_sh <= enc_sh(int'(row), int'(ent)); q0_row <= row;
+    q1_v <= q0_v; q1_cv <= ucol[q0_col]; q1_sh <= q0_sh; q1_row <= q0_row;
+    q2_v <= q1_v; q2_row <= q1_row;
+    begin
       logic [Z-1:0] t;
-      for (int r = 0; r < Z; r++) t[r] = e_sh[s] ? rv[(r + (1 << s)) % Z] : rv[r];
-      rv = t;
+      t = q1_cv;
+      for (int s = 0; s < 6; s++) begin
+        logic [Z-1:0] w;
+        for (int r = 0; r < Z; r++) w[r] = q1_sh[s] ? t[(r + (1 << s)) % Z] : t[r];
+        t = w;
+      end
+      q2_rv <= t;
     end
+    if (rst) begin q0_v <= 1'b0; q1_v <= 1'b0; q2_v <= 1'b0; end
+  end
+  // XOR stage (separate process: lam is also cleared in E_LOAD)
+  always_ff @(posedge clk) begin
+    if (q2_v) lam[q2_row] <= lam[q2_row] ^ q2_rv;
+    else if (clr_lam) for (int i = 0; i < LMB; i++) lam[i] <= '0;
   end
 
   function automatic logic [Z-1:0] rotv(input logic [Z-1:0] x, input int sh);
@@ -78,16 +94,17 @@ module phy_ldpc_enc
           u <= {u[LK-9:0], in_data};
           if (bcnt == 8'(NBYTES - 1)) begin
             bcnt <= '0; st <= E_LAM; row <= '0; ent <= '0;
-            for (int i = 0; i < LMB; i++) lam[i] <= '0;
           end else bcnt <= bcnt + 1'b1;
         end
         E_LAM: begin
-          lam[row] <= lam[row] ^ rv;
           if (5'(ent) + 5'd1 == 5'(enc_n(int'(row)))) begin
             ent <= '0;
-            if (row == 3'(LMB - 1)) begin st <= E_PAR; pstep <= '0; end
+            if (row == 3'(LMB - 1)) begin st <= E_DRAIN; dcnt <= 3'd4; end
             else row <= row + 1'b1;
           end else ent <= ent + 1'b1;
+        end
+        E_DRAIN: begin
+          if (dcnt == 3'd0) begin st <= E_PAR; pstep <= '0; end else dcnt <= dcnt - 1'b1;
         end
         E_PAR: begin
           // pstep 0: p0 ; 1: p1 ; 2..5: p2..p5 (one per cycle)

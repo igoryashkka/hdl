@@ -14,6 +14,7 @@ module phy_rx_top
 #(
   parameter int MAX_SYMS      = 8,
   parameter int W0_OFFSET     = 104,
+  parameter int WIN_DELAY     = 48,        // samples the window input lags the detector (arm latency margin: n_decl - n_best can reach TRACK_LEN)
   parameter int WATCHDOG_BITS = 24,
   parameter int FFT_MASK      = 32'h00F,
   parameter int DC_K          = 16,           // DC canceller time constant 2^K samples (K=12 left a 1-bit error at the band edge for CFO > 6 kHz, see phy_sim study)
@@ -99,8 +100,16 @@ module phy_rx_top
   logic        w_valid, w_first, w_last, w_busy, w_late, w_done;
   logic signed [IQ_W-1:0] w_i, w_q;
   logic [7:0]  w_win;
+  // The detector declares up to TRACK_LEN samples after n_best and the CFO measurement adds more, so the window start (n_best + W0_OFFSET)
+  // can already lie in the past when armed. The window sees the (mixed) stream WIN_DELAY samples late; the sample index is unchanged
+  // (the delay line advances on valid samples only, so index n of the window input equals the detector index).
+  logic signed [IQ_W-1:0] dl_i [WIN_DELAY], dl_q [WIN_DELAY];
+  always_ff @(posedge clk) if (mx_valid) begin
+    dl_i[0] <= mx_i; dl_q[0] <= mx_q;
+    for (int k = 1; k < WIN_DELAY; k++) begin dl_i[k] <= dl_i[k-1]; dl_q[k] <= dl_q[k-1]; end
+  end
   phy_rx_window u_win (
-    .clk, .rst, .arm_valid, .arm_w0, .arm_nwin, .in_valid(mx_valid), .in_i(mx_i), .in_q(mx_q),
+    .clk, .rst, .arm_valid, .arm_w0, .arm_nwin, .in_valid(mx_valid), .in_i(dl_i[WIN_DELAY-1]), .in_q(dl_q[WIN_DELAY-1]),
     .out_valid(w_valid), .out_i(w_i), .out_q(w_q), .out_first(w_first), .out_last(w_last), .out_win(w_win),
     .busy(w_busy), .late(w_late), .done(w_done)
   );
@@ -284,12 +293,13 @@ module phy_rx_top
   // fine timing loop (coded mode): w0_adj += (tau - target) / 2 per packet, clamped to +-40 samples
   logic signed [7:0] w0_adj;
   wire  signed [20:0] tau_err = 21'(tau_q8) - $signed({1'b0, cfg_tau_tgt, 8'd0});
-  wire  signed [12:0] adj_step = 13'(tau_err >>> 9);
+  logic signed [12:0] adj_step; logic tau_valid_q;          // step registered one cycle (timing)
+  always_ff @(posedge clk) begin adj_step <= 13'(tau_err >>> 9); tau_valid_q <= tau_valid & ~rst; end
   wire  signed [12:0] adj_nxt  = 13'(w0_adj) + adj_step;
   always_ff @(posedge clk) begin
     if (rst) w0_adj <= '0;
     else if (!cfg_ft_en) w0_adj <= '0;
-    else if (tau_valid && CODED) w0_adj <= (adj_nxt > 13'sd40) ? 8'sd40 : (adj_nxt < -13'sd40) ? -8'sd40 : adj_nxt[7:0];
+    else if (tau_valid_q && CODED) w0_adj <= (adj_nxt > 13'sd40) ? 8'sd40 : (adj_nxt < -13'sd40) ? -8'sd40 : adj_nxt[7:0];
   end
   assign st_w0_adj = w0_adj;
   always_ff @(posedge clk) begin
@@ -329,7 +339,7 @@ module phy_rx_top
         end
         C_CFO: if (cfo_done) begin
           nco_inc <= cfo_inc; ph_clr <= 1'b1;
-          arm_valid <= 1'b1; arm_w0 <= w0_q; arm_nwin <= nwin_q;
+          arm_valid <= 1'b1; arm_w0 <= w0_q + 32'(WIN_DELAY); arm_nwin <= nwin_q;
           cst <= C_RUN;
         end
         C_RUN: begin

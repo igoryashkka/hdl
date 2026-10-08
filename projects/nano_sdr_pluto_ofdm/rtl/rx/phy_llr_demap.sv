@@ -4,7 +4,7 @@
 //        axis value x:   L0 = -x ,  L1 = |x| - T
 //        LLR = sat( (L * gm) >> (SH_C - ge) )   (round half up; left shift when SH_C - ge <= 0), 6 bit symmetric (+-31)
 //   Output bit order: [I b0, I b1, Q b0, Q b1], LLR > 0 => bit 0 (same convention as phy_qam_demapper).
-// Latency 5, throughput 1 bin/cycle, 4 DSP.   Golden: python/phy2_fixed_ref.py::demap_soft (bit-exact)
+// Latency 6, throughput 1 bin/cycle, 4 DSP.   Golden: python/phy2_fixed_ref.py::demap_soft (bit-exact)
 module phy_llr_demap
   import phy_pkg::*;
   import phy_soft_pkg::*;
@@ -68,14 +68,20 @@ module phy_llr_demap
       p4[i] <= (sh3 > 8'sd0) ? (40'(p3[i]) + (40'sd1 <<< (sh3 - 8'sd1))) : 40'(p3[i]);
   end
 
-  // S5: shift and saturate
+  // S5: shift
+  logic v5, f5, l5; logic signed [39:0] p5 [4];
   always_ff @(posedge clk) begin
-    if (rst) out_valid <= 1'b0; else out_valid <= v4;
-    out_first <= f4; out_last <= l4;
+    if (rst) v5 <= 1'b0; else v5 <= v4;
+    f5 <= f4; l5 <= l4;
+    for (int i = 0; i < 4; i++) p5[i] <= (sh4 > 8'sd0) ? (p4[i] >>> sh4) : (p4[i] <<< (-sh4));
+  end
+
+  // S6: saturate
+  always_ff @(posedge clk) begin
+    if (rst) out_valid <= 1'b0; else out_valid <= v5;
+    out_first <= f5; out_last <= l5;
     for (int i = 0; i < 4; i++) begin
-      logic signed [39:0] v;
-      v = (sh4 > 8'sd0) ? (p4[i] >>> sh4) : (p4[i] <<< (-sh4));
-      if (v > 40'sd31) out_llr[i] <= 6'sd31; else if (v < -40'sd31) out_llr[i] <= -6'sd31; else out_llr[i] <= v[5:0];
+      if (p5[i] > 40'sd31) out_llr[i] <= 6'sd31; else if (p5[i] < -40'sd31) out_llr[i] <= -6'sd31; else out_llr[i] <= p5[i][5:0];
     end
   end
 endmodule

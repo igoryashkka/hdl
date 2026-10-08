@@ -110,3 +110,12 @@ RX-білд: у `axi_ad9361` вимкнено DDS і IQ-корекцію DAC (`D
   AWGN: uncoded 16-QAM ZF PER 1 % приблизно з 24 дБ, LDPC з ≈ 16 дБ; 2 промені: uncoded PER 65 % ще на 26 дБ, LDPC 0 % з 18 дБ.
   MMSE vs ZF: з рівномірним LLR MMSE кращий (PER 35 % проти 60 % на 18 дБ), з LLR із вагою на субнесучу різниці майже немає.
 * Далі: інтеграція в `phy_sim` (TX/RX backend v2, порівняння Current vs New), fine timing / residual CFO / SFO, fixed-point моделі, RTL, Vivado Z7020, report.
+
+## v0.6.0: RTL-прогони, закриття таймінгу RX, звіт Current vs New
+
+- Симулятор (phy_sim, бітово-точні моделі, 5620 запусків): потрібний SNR для PER ≤ 1 %: AWGN 22 → 13 дБ, 2 промені 30 → 16 дБ, 3 промені 34 → 16 дБ; Rician/Rayleigh 20 Гц у поточного PHY не досягається до 34 дБ. SFO: 8-символьні пакети до 30 ppm (було 0–5). Скрипти: `phy_sim/experiments/{phy_compare,rtl_runs,collect_resources,build_phy_report}.py`, шаблон `phy_report_template.html`.
+- RTL у xsim (TX RTL → канал → RX RTL) для 6 сценаріїв: 54/54 перевірок проти `python:fixed` (payload, n_best, приріст NCO, сузір'я).
+- Виправлено дефект RTL: детектор оголошує пакет до TRACK_LEN відліків після піка, початок вікна FFT міг бути в минулому на момент арму (RX губив пакети при SNR ≤ 18 дБ). Додано `WIN_DELAY = 48` відліків перед вікном (`phy_rx_top.sv`).
+- Таймінг RX (Z7020, 8 нс): конвеєр акумулятора нахилу SFO і множення в `phy_phase_tracker`, ваги каналу в блочній RAM, реєстрові стадії в `phy_tau_est`, `phy_mmse_post`, `w0_adj`, `phy_rx_decode_ldpc`, `|q|` у декодері, 16-бітове порівняння у `phy_rx_window`.
+- Vivado 2025.2, xc7z020clg400-1: TX LUT 16987 / FF 24440 / BRAM 21 / DSP 54, WNS +0.666; RX LUT 40420 / FF 40257 / BRAM 33.5 / DSP 88, WNS +0.116, WHS +0.023, slice 13083 з 13300 (98 %). Запасу по slice майже немає: LDPC-декодер (≈ 20k LUT) варто зменшити.
+- Регресія `sim/run_regression.sh`: 76/76 пройшли. На реальному залізі нічого не перевірено.

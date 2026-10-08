@@ -37,7 +37,7 @@ class RtlSimTxBackend(TxBackend):
             for i, b in enumerate(p):
                 words.append(f"{((1 if i == len(p) - 1 else 0) << 8) | b:03x}")
         mem = "\n".join(words) + "\n"
-        gen = {"NB": len(words), "NPKT": len(self.packets), "GAIN": int(self.cfg["tx"].get("gain", 16384)),
+        gen = {"CODED": 1 if refs.phy_code(self.cfg) == "ldpc" else 0, "NB": len(words), "NPKT": len(self.packets), "GAIN": int(self.cfg["tx"].get("gain", 16384)),
                "CLKS_PER_SAMPLE": self.CLKS_PER_SAMPLE,
                "PKT_GAP_CLKS": int(self.cfg["experiment"].get("packet_gap", 12000)) * self.CLKS_PER_SAMPLE}
         sim = Simulator(self.cfg)

@@ -41,14 +41,15 @@
 /* ---- PHY / register constants (must match the RTL) ----------------------------------------------------------------- */
 #define PHY_BASE       0x7C440000u
 #define PHY_SPAN       0x1000u
-#define BYTES_PER_SYM  550
+#define BYTES_UNCODED  550
+#define BYTES_CODED    450      /* LDPC R=5/6: 2 codewords x 225 bytes per OFDM symbol */
 #define PHY_FS_HZ      30720000.0
 #define REG_ID         0x00
 #define REG_CTRL       0x04
 #define REG_SNAP       0x08
 #define REG_CFG0       0x10
 #define REG_STAT0      0x80
-#define NST            16
+#define NST            32
 #define ID_RX          0x4F465258u
 #define ID_TX          0x4F465458u
 #define PILOTS_PER_SYM 100
@@ -59,7 +60,12 @@
 
 #define APP_MAGIC      0x4B4E4C50u    /* 'PLNK' */
 #define APP_HDR        32
-#define APP_MAX        (8 * BYTES_PER_SYM)
+#define APP_MAX        (8 * BYTES_UNCODED)
+#define SYM_LEN        2192
+#define REG_FEATURE_W  31     /* status word 31: bit0 = coded PHY */
+
+static int g_coded;           /* set from the PHY feature word (or --coded / --uncoded) */
+static inline int bytes_per_sym(void) { return g_coded ? BYTES_CODED : BYTES_UNCODED; }
 
 static volatile sig_atomic_t g_stop;
 static void on_sig(int s) { (void)s; g_stop = 1; }
@@ -124,7 +130,7 @@ struct app_info {
 static void app_build(uint8_t *buf, int nsyms, uint32_t seq, uint32_t run_seed, uint16_t step_id, int gain_x100,
 		      uint32_t freq_khz, uint32_t tx_ms)
 {
-	size_t n = (size_t)nsyms * BYTES_PER_SYM;
+	size_t n = (size_t)nsyms * bytes_per_sym();
 	uint32_t seed = prbs_seed_for(run_seed, seq);
 	wr32(buf + 0, APP_MAGIC);
 	wr32(buf + 4, seq);
@@ -185,13 +191,21 @@ static void app_check(const uint8_t *buf, size_t n, uint32_t run_seed, uint32_t 
  * PHY packet record (RX): beat0 {A55A,ver,flags,nbytes,seq} beat1 {cfo_inc,n_best} beat2 {angle16,rssi16,evm32} payload
  * ==================================================================================================================== */
 struct phy_rec {
-	uint8_t flags, version;
+	uint8_t flags, version, nh;            /* nh = number of header beats (3 for v2, 6 for v3) */
 	uint16_t nbytes, seq;
 	uint32_t n_best;
 	int32_t cfo_inc;
 	uint32_t evm_sum;
 	uint16_t rssi_code;
 	int16_t angle16;
+	/* v3 (coded PHY): channel quality, LDPC statistics, fine timing, SFO slope */
+	int16_t snr_avg_code, snr_min_code, noise_code;
+	uint16_t bad_sc;
+	uint8_t ldpc_fail, ldpc_iter_max, mode_bits;
+	uint16_t ldpc_iter_sum;
+	int32_t tau_q8;
+	uint32_t angle_first;
+	int32_t slope;
 	const uint8_t *payload;
 };
 
@@ -203,14 +217,18 @@ static size_t phy_parse(const uint8_t *acc, size_t len, unsigned expect_nbytes, 
 	*skipped = 0;
 	while (o + 24 <= len) {
 		const uint8_t *p = acc + o;
-		if (p[5] == 2 && p[6] == 0x5A && p[7] == 0xA5 && rd16(p + 2) == expect_nbytes) {
-			size_t total = 24 + (((size_t)expect_nbytes + 7) & ~(size_t)7);
+		int ver = p[5];
+		if ((ver == 2 || ver == 3) && p[6] == 0x5A && p[7] == 0xA5 && rd16(p + 2) == expect_nbytes) {
+			unsigned nh = (ver == 3) ? 6 : 3;
+			size_t total = 8 * nh + (((size_t)expect_nbytes + 7) & ~(size_t)7);
 			if (o + total > len) {
 				*skipped = o;
 				return 0;
 			}
+			memset(r, 0, sizeof *r);
 			r->flags = p[4];
-			r->version = p[5];
+			r->version = ver;
+			r->nh = nh;
 			r->nbytes = rd16(p + 2);
 			r->seq = rd16(p);
 			r->n_best = rd32(p + 8);
@@ -218,7 +236,20 @@ static size_t phy_parse(const uint8_t *acc, size_t len, unsigned expect_nbytes, 
 			r->evm_sum = rd32(p + 16);
 			r->rssi_code = rd16(p + 20);
 			r->angle16 = (int16_t)rd16(p + 22);
-			r->payload = p + 24;
+			if (ver == 3) {
+				r->snr_avg_code = (int16_t)rd16(p + 30);        /* beat 3 = {snr_avg, snr_min, bad, noise} (MSB first) */
+				r->snr_min_code = (int16_t)rd16(p + 28);
+				r->bad_sc = rd16(p + 26);
+				r->noise_code = (int16_t)rd16(p + 24);
+				r->tau_q8 = (int32_t)(rd32(p + 32) << 12) >> 12;   /* beat 4 = {fail, imax, isum, mode, 4'b0, tau20} */
+				r->mode_bits = p[35];
+				r->ldpc_iter_sum = rd16(p + 36) & 0xFFF;
+				r->ldpc_iter_max = p[38] & 0x1F;
+				r->ldpc_fail = p[39];
+				r->slope = (int32_t)rd32(p + 40);                 /* beat 5 = {angle_first, slope_last} */
+				r->angle_first = rd32(p + 44);
+			}
+			r->payload = p + 8 * nh;
 			*skipped = o;
 			return o + total;
 		}
@@ -490,6 +521,9 @@ struct opts {
 	int no_rf;
 	double fs_hz;
 	int bytes_chunk;
+	int force_coded;          /* -1 = auto from the PHY feature word */
+	int mmse, max_iter, ft_en, tau_tgt;
+	double bad_snr_db;
 };
 
 static void usage(void)
@@ -510,6 +544,9 @@ static void usage(void)
 	     "rx:\n"
 	     "  --rx-gain DB       manual RX gain (default 40)    --agc        slow-attack AGC instead of manual gain\n"
 	     "  --rmin N           detector energy gate           --gain-sh N  digital gain shift before the detector (-8..7)\n"
+	     "  --mmse 0|1         coded PHY: ZF / MMSE equalizer (default 1)    --max-iter N  LDPC iteration limit (default 10)\n"
+	     "  --no-ft            disable the fine-timing loop   --tau-tgt N   wanted LTS window earliness in samples (default 56)\n"
+	     "  --bad-snr DB       a subcarrier is bad below this SNR (default 10 dB)    --coded/--uncoded  override the PHY mode detection\n"
 	     "WARNING: use cables + 30..60 dB of attenuation between the boards for the first runs (the receiver front end is easy to overload).");
 }
 
@@ -524,6 +561,12 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 	o->gap_samples = 16384;
 	o->stats_s = 1.0;
 	o->fs_hz = PHY_FS_HZ;
+	o->force_coded = -1;
+	o->mmse = 1;
+	o->max_iter = 10;
+	o->ft_en = 1;
+	o->tau_tgt = 56;
+	o->bad_snr_db = 10.0;
 	for (int i = 2; i < argc; i++) {
 		const char *a = argv[i];
 #define ARG(name) (!strcmp(a, name) && i + 1 < argc)
@@ -540,6 +583,13 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		else if (ARG("--gap")) o->gap_samples = strtoul(argv[++i], NULL, 0);
 		else if (ARG("--rx-gain")) o->rx_gain_db = atof(argv[++i]);
 		else if (!strcmp(a, "--agc")) o->rx_agc = 1;
+		else if (!strcmp(a, "--coded")) o->force_coded = 1;
+		else if (!strcmp(a, "--uncoded")) o->force_coded = 0;
+		else if (ARG("--mmse")) o->mmse = atoi(argv[++i]);
+		else if (ARG("--max-iter")) o->max_iter = atoi(argv[++i]);
+		else if (!strcmp(a, "--no-ft")) o->ft_en = 0;
+		else if (ARG("--tau-tgt")) o->tau_tgt = atoi(argv[++i]);
+		else if (ARG("--bad-snr")) o->bad_snr_db = atof(argv[++i]);
 		else if (ARG("--rmin")) { o->rmin = strtoul(argv[++i], NULL, 0); o->rmin_set = 1; }
 		else if (ARG("--gain-sh")) o->gain_sh = atoi(argv[++i]);
 		else if (ARG("--sweep")) {
@@ -677,15 +727,32 @@ static void rx_handle(const struct phy_rec *r, const struct opts *o, struct rx_a
 		x[k]->cfo_sum += cfo;
 		x[k]->n_meas++;
 	}
-	fprintf(fp, "%.4f,%u,%u,%d,%d,%u,%d,%.2f,%u,%llu,%llu,%llu,%.3f,%.2f,%.1f,%.2f,%.1f,%u,%u,%u\n", t, r->seq, ar.info.seq, ar.hdr_ok,
-		ar.crc_ok, ar.info.step_id, ar.info.gain_x100, ar.info.gain_x100 / 100.0, r->flags, (unsigned long long)ar.bits,
-		(unsigned long long)ar.bit_errors, (unsigned long long)ar.byte_errors, evm, snr, cfo, rs, r->angle16 * 360.0 / 65536.0,
-		r->n_best, r->evm_sum, r->rssi_code);
+	/* v3 extras: channel SNR from the LTS, LDPC, fine timing, SFO slope, residual CFO from the CPE angle drift */
+	const double k_db = 3.0103 / 32.0;
+	double snr_avg = -999, snr_min = -999, tau = -999, sfo_ppm = -999, cfo_res = -999, it_avg = -999;
+	if (r->version == 3) {
+		snr_avg = r->snr_avg_code * k_db;
+		snr_min = r->snr_min_code * k_db;
+		tau = r->tau_q8 / 256.0;
+		it_avg = (double)r->ldpc_iter_sum / (2 * o->nsyms);
+		double slope = (double)r->slope / 4294967296.0 * 2.0 * M_PI;                 /* rad per bin at the last data symbol */
+		sfo_ppm = slope * 2048.0 / (2.0 * M_PI) / ((double)o->nsyms * SYM_LEN) * 1e6;
+		if (o->nsyms > 1) {
+			int16_t d16 = (int16_t)(r->angle16 - (int16_t)(r->angle_first >> 16));
+			cfo_res = (double)d16 / 65536.0 / (o->nsyms - 1) * PHY_FS_HZ / SYM_LEN;
+		}
+	}
+	fprintf(fp, "%.4f,%u,%u,%d,%d,%u,%d,%.2f,%u,%llu,%llu,%llu,%.3f,%.2f,%.1f,%.2f,%.1f,%u,%u,%u,%.2f,%.2f,%u,%d,%u,%u,%.2f,%.3f,%.2f,%.2f\n",
+		t, r->seq, ar.info.seq, ar.hdr_ok, ar.crc_ok, ar.info.step_id, ar.info.gain_x100, ar.info.gain_x100 / 100.0, r->flags,
+		(unsigned long long)ar.bits, (unsigned long long)ar.bit_errors, (unsigned long long)ar.byte_errors, evm, snr, cfo, rs,
+		r->angle16 * 360.0 / 65536.0, r->n_best, r->evm_sum, r->rssi_code, snr_avg, snr_min, r->bad_sc, r->noise_code, r->ldpc_fail,
+		r->ldpc_iter_max, it_avg, tau, sfo_ppm, cfo_res);
 }
 
 static const char *RX_HDR =
 	"t_s,phy_seq,app_seq,hdr_ok,crc_ok,step_id,tx_gain_x100,tx_gain_db,flags,bits,bit_errors,byte_errors,evm_pct,snr_db,cfo_hz,"
-	"rssi_dbfs,cpe_deg,n_best,evm_sum,rssi_code";
+	"rssi_dbfs,cpe_deg,n_best,evm_sum,rssi_code,chan_snr_db,chan_snr_min_db,bad_subcarriers,noise_code,ldpc_cw_failed,ldpc_iter_max,"
+	"ldpc_iter_avg,tau_samples,sfo_ppm_est,cfo_resid_hz";
 
 static int run_rx(const struct opts *o)
 {
@@ -699,6 +766,13 @@ static int run_rx(const struct opts *o)
 	struct rfcfg rf = { o->freq_hz, o->fs_hz, 20e6, 0, o->rx_gain_db, o->rx_agc };
 	if (!o->no_rf && rf_setup(&rf, 0) < 0)
 		return 1;
+	{
+		struct hwstat f;
+		g_coded = (hw_snapshot(&f) == 0) ? (int)(f.w[REG_FEATURE_W] & 1) : 0;
+		if (o->force_coded >= 0)
+			g_coded = o->force_coded;
+		printf("PHY mode: %s\n", g_coded ? "coded (LDPC R=5/6, soft LLR, MMSE/ZF, SFO tracking)" : "uncoded (hard decision)");
+	}
 	/* PHY configuration + reset + clear */
 	wreg(REG_CTRL, 1);
 	usleep(1000);
@@ -706,12 +780,19 @@ static int run_rx(const struct opts *o)
 	if (o->rmin_set)
 		wreg(REG_CFG0 + 4, o->rmin);
 	wreg(REG_CFG0 + 8, (uint32_t)o->gain_sh & 0xF);
+	if (g_coded) {
+		wreg(REG_CFG0 + 12, o->mmse);
+		wreg(REG_CFG0 + 16, o->max_iter);
+		wreg(REG_CFG0 + 20, (uint32_t)lround(o->bad_snr_db / 0.0941) & 0x1FFF);
+		wreg(REG_CFG0 + 24, o->ft_en);
+		wreg(REG_CFG0 + 28, o->tau_tgt);
+	}
 	wreg(REG_CTRL, 0);
 	usleep(1000);
 	wreg(REG_CTRL, 2);
 
-	size_t nbytes = (size_t)o->nsyms * BYTES_PER_SYM;
-	size_t rec_bytes = 24 + ((nbytes + 7) & ~(size_t)7);
+	size_t nbytes = (size_t)o->nsyms * bytes_per_sym();
+	size_t rec_bytes = (g_coded ? 48 : 24) + ((nbytes + 7) & ~(size_t)7);
 	struct stream st;
 	if (stream_open(&st, "cf-ad9361-lpc", "in_voltage", rec_bytes, 1) < 0)
 		return 1;
@@ -816,6 +897,13 @@ static int run_tx(const struct opts *o)
 		fprintf(stderr, "register ID 0x%08x is not the TX PHY (0x%08x): wrong bitstream loaded on this board\n", id, ID_TX);
 		return 1;
 	}
+	{
+		struct hwstat f;
+		g_coded = (hw_snapshot(&f) == 0) ? (int)(f.w[REG_FEATURE_W] & 1) : 0;
+		if (o->force_coded >= 0)
+			g_coded = o->force_coded;
+		printf("PHY mode: %s\n", g_coded ? "coded (LDPC R=5/6, 450 payload bytes per OFDM symbol)" : "uncoded (550 bytes per symbol)");
+	}
 	double gain = o->sweep ? o->sw_from : o->tx_gain_db;
 	struct rfcfg rf = { o->freq_hz, o->fs_hz, 20e6, gain, 0, 0 };
 	int phy = -1;
@@ -833,7 +921,7 @@ static int run_tx(const struct opts *o)
 	usleep(1000);
 	wreg(REG_CTRL, 2);
 
-	size_t nbytes = (size_t)o->nsyms * BYTES_PER_SYM;
+	size_t nbytes = (size_t)o->nsyms * bytes_per_sym();
 	size_t beats = 1 + (nbytes + 7) / 8;
 	size_t blk = beats * 8;
 	struct stream st;
@@ -977,8 +1065,10 @@ static int run_diag(const struct opts *o)
 static int selftest(void)
 {
 	int errs = 0;
+	for (int cod = 0; cod < 2; cod++)
 	for (int nsyms = 1; nsyms <= 8; nsyms += 7) {
-		size_t n = (size_t)nsyms * BYTES_PER_SYM;
+		g_coded = cod;
+		size_t n = (size_t)nsyms * bytes_per_sym();
 		uint8_t pay[APP_MAX];
 		app_build(pay, nsyms, 12345, 7, 3, -3550, 2450000, 99);
 		struct app_result r;
@@ -1000,18 +1090,32 @@ static int selftest(void)
 			printf("selftest: header-bad path failed (hdr_ok %d, %llu bits)\n", r.hdr_ok, (unsigned long long)r.bit_errors);
 			errs++;
 		}
-		/* PHY record framing with leading garbage and a split read */
-		uint8_t stream[8 * 3 + APP_MAX + 64], rec[8 * 3 + APP_MAX + 8];
-		size_t rb = 24 + ((n + 7) & ~(size_t)7);
+		/* PHY record framing with leading garbage and a split read (v2 uncoded record or v3 coded record) */
+		unsigned nh = cod ? 6 : 3;
+		uint8_t stream[8 * 6 + APP_MAX + 64], rec[8 * 6 + APP_MAX + 8];
+		size_t rb = 8 * nh + ((n + 7) & ~(size_t)7);
 		memset(rec, 0, sizeof rec);
-		wr16(rec + 0, 77); wr16(rec + 2, (uint16_t)n); rec[4] = 0; rec[5] = 2; rec[6] = 0x5A; rec[7] = 0xA5;
+		wr16(rec + 0, 77); wr16(rec + 2, (uint16_t)n); rec[4] = 0; rec[5] = cod ? 3 : 2; rec[6] = 0x5A; rec[7] = 0xA5;
 		wr32(rec + 8, 4242);                                /* n_best */
 		wr32(rec + 12, (uint32_t)-1000000);                 /* cfo_inc */
 		wr32(rec + 16, 100 * 2 * nsyms * 500);              /* evm sum: mean L1 per pilot = 1000 */
 		wr16(rec + 20, (20u << 10) | 512);
 		wr16(rec + 22, 0x4000);
+		if (cod) {
+			wr16(rec + 24, (uint16_t)-300);                 /* noise code */
+			wr16(rec + 26, 7);                              /* bad subcarriers */
+			wr16(rec + 28, (uint16_t)203);                  /* snr_min code */
+			wr16(rec + 30, 379);                            /* snr_avg code */
+			wr32(rec + 32, 0x000FFF00u & 0x000FFFFFu);      /* tau = -256 (20 bit two's complement 0xFFF00) */
+			rec[35] = 0x03;                                 /* mode bits */
+			wr16(rec + 36, 11);                             /* iteration sum */
+			rec[38] = 4;                                    /* iteration max */
+			rec[39] = 1;                                    /* failed codewords */
+			wr32(rec + 40, (uint32_t)-5000000);             /* slope */
+			wr32(rec + 44, 0x12340000u);                    /* first angle */
+		}
 		app_build(pay, nsyms, 5, 7, 0, -4000, 2450000, 1);
-		memcpy(rec + 24, pay, n);
+		memcpy(rec + 8 * nh, pay, n);
 		memset(stream, 0xEE, 16);
 		memcpy(stream + 16, rec, rb);
 		struct phy_rec pr;
@@ -1020,6 +1124,13 @@ static int selftest(void)
 		used = phy_parse(stream, 16 + rb, n, &pr, &skip);
 		if (used != 16 + rb || skip != 16 || pr.seq != 77 || pr.n_best != 4242 || pr.cfo_inc != -1000000 || pr.angle16 != 0x4000) {
 			printf("selftest: record parse failed (used %zu skip %zu)\n", used, skip);
+			errs++;
+		}
+		if (cod && (pr.version != 3 || pr.snr_avg_code != 379 || pr.snr_min_code != 203 || pr.bad_sc != 7 || pr.noise_code != -300 ||
+			    pr.tau_q8 != -256 || pr.ldpc_iter_sum != 11 || pr.ldpc_iter_max != 4 || pr.ldpc_fail != 1 || pr.slope != -5000000 ||
+			    pr.angle_first != 0x12340000u || pr.mode_bits != 3)) {
+			printf("selftest: v3 fields wrong (snr %d/%d bad %u noise %d tau %d it %u/%u fail %u slope %d)\n", pr.snr_avg_code, pr.snr_min_code,
+			       pr.bad_sc, pr.noise_code, pr.tau_q8, pr.ldpc_iter_sum, pr.ldpc_iter_max, pr.ldpc_fail, pr.slope);
 			errs++;
 		}
 		double evm = evm_pct(pr.evm_sum, nsyms);

@@ -4,7 +4,7 @@
 ## PHY RTL is shared: ../nano_sdr_pluto_ofdm/rtl
 ###############################################################################
 set ofdm_rtl_dir [file normalize [file join [file dirname [file normalize [info script]]] .. nano_sdr_pluto_ofdm rtl]]
-foreach ofdm_f {common/phy_pkg.sv common/phy_regs_axil.v common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv tx/phy_scrambler.sv tx/phy_qam_mapper.sv tx/phy_interleaver.sv tx/phy_ofdm_mapper.sv tx/phy_pilot_insert.sv tx/phy_preamble_gen.sv tx/phy_ifft_2048.sv tx/phy_tx_scaler.sv tx/phy_cp_insert.sv tx/phy_tx_frame_ctrl.sv tx/phy_tx_top.sv tx/phy_tx_axis_top.v} {
+foreach ofdm_f {common/phy_pkg.sv common/phy_ldpc_enc.sv common/phy_ldpc_pkg.sv common/phy_regs_axil.v common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv tx/phy_scrambler.sv tx/phy_qam_mapper.sv tx/phy_interleaver.sv tx/phy_ofdm_mapper.sv tx/phy_pilot_insert.sv tx/phy_preamble_gen.sv tx/phy_ifft_2048.sv tx/phy_tx_scaler.sv tx/phy_cp_insert.sv tx/phy_tx_frame_ctrl.sv tx/phy_tx_top.sv tx/phy_tx_axis_top.v} {
   add_files -norecurse [file join $ofdm_rtl_dir $ofdm_f]
 }
 set_property file_type SystemVerilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_*.sv}]

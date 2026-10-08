@@ -26,14 +26,16 @@ module phy_tau_est (
   end
   wire [43:0] a_r = ar[43] ? 44'(-ar) : 44'(ar);
   wire [43:0] a_i = ai[43] ? 44'(-ai) : 44'(ai);
+  logic [43:0] mm_q; logic v1b;
+  always_ff @(posedge clk) begin v1b <= v1 & ~rst; mm_q <= a_r | a_i; end
   always_comb begin
-    mm = a_r | a_i;
+    mm = mm_q;
     shn = '0;
     for (int b = 0; b < 44; b++) if (mm[b]) shn = (b + 1 > XW - 1) ? 6'(b + 1 - (XW - 1)) : 6'd0;
   end
   // S1: shift amount registered ; S2: normalised operands + CORDIC start
   always_ff @(posedge clk) begin
-    v2 <= v1 & ~rst; shn_q <= shn;
+    v2 <= v1b & ~rst; shn_q <= shn;
   end
   always_ff @(posedge clk) begin
     cstart <= 1'b0; v3 <= 1'b0;

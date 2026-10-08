@@ -94,7 +94,8 @@ module phy_rx_decode_ldpc
   logic        d_valid, d_first, d_last; logic [7:0] d_data;
   logic [7:0]  fail_acc; logic [4:0] imax_acc; logic [11:0] isum_acc;
   wire  [8:0]  cw_total = {nsyms_l, 1'b0};
-  wire         last_cw  = (cw_cnt + 9'd1 == cw_total);
+  logic        last_cw;                  // registered: cw_cnt changes only once per codeword, a one-cycle lag is invisible
+  always_ff @(posedge clk) last_cw <= (cw_cnt + 9'd1 == cw_total);
   always_ff @(posedge clk) begin
     d_valid <= ld_valid; d_data <= ld_data; d_first <= 1'b0; d_last <= 1'b0; stat_valid <= 1'b0;
     cw_pulse <= 1'b0; cw_fail_pulse <= 1'b0;

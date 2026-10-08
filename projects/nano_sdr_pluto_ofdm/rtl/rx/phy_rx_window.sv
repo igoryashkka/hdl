@@ -44,7 +44,7 @@ module phy_rx_window
 
   assign busy = (st != S_IDLE);
 
-  wire at_start = in_valid && (st == S_ARMED || st == S_GAP) && (n == next_start);
+  wire at_start = in_valid && (st == S_ARMED || st == S_GAP) && (n[15:0] == next_start[15:0]);   // 16-bit compare is enough: armed windows start < 2^16 samples ahead
   wire starting = at_start && !final_q;
   wire in_win   = in_valid && (st == S_WIN);
   wire pass     = starting || in_win;

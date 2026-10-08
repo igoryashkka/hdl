@@ -29,10 +29,11 @@ def available(cfg: dict | None = None) -> bool:
 
 def rtl_files() -> list[Path]:
     root = refs.project_dir()
-    files = [root / "rtl" / "common" / "phy_pkg.sv"]
+    pkgs = ["phy_pkg.sv", "phy_ldpc_pkg.sv", "phy_soft_pkg.sv"]
+    files = [root / "rtl" / "common" / n for n in pkgs]
     for d in ("common", "tx", "rx"):
         for f in sorted((root / "rtl" / d).glob("*.sv")):
-            if f.name != "phy_pkg.sv":
+            if f.name not in pkgs:
                 files.append(f)
     return files
 

@@ -17,7 +17,9 @@ run tb_phy_preamble_gen
 for c in "1 4 15" "2 4 0" "3 11 255"; do set -- $c; run tb_phy_ifft_2048 "TAG=$1 N_LOG=$2 MASK=$3"; done
 for c in "1 16384" "2 8192" "3 65535" "4 0" "5 24000"; do set -- $c; run tb_phy_tx_scaler "TAG=$1 GAIN=$2"; done
 for c in "1 4 4" "2 11 144" "3 5 0"; do set -- $c; run tb_phy_cp_insert "TAG=$1 N_LOG=$2 CP=$3"; done
-run tb_phy_tx_top
+run tb_phy_tx_top CODED=0
+run tb_phy_tx_top CODED=1
+run tb_phy_ldpc_enc
 for t in 1 2 3; do run tb_phy_sync_sc "TAG=$t"; done
 for c in "1 10" "2 4"; do set -- $c; run tb_phy_dc_remove "TAG=$1 K=$2"; done
 for c in "1 0" "2 3" "3 -3" "4 7" "5 -8"; do set -- $c; run tb_phy_input_scale "TAG=$1 SH=$2"; done
@@ -30,10 +32,18 @@ for c in "1 4 15" "2 4 0" "3 11 15"; do set -- $c; run tb_phy_rx_fft "TAG=$1 N_L
 run tb_phy_bin_select
 run tb_phy_channel_estimator
 run tb_phy_equalizer
-run tb_phy_phase_tracker
+run tb_phy_phase_tracker SLOPE=0
+run tb_phy_phase_tracker SLOPE=1
 run tb_phy_rx_decode
-run tb_phy_rx_pkt_out
-run tb_phy_rx_top
+run tb_phy_rx_pkt_out V3=0
+run tb_phy_rx_pkt_out V3=1
+run tb_phy_rx_top CODED=0
+run tb_phy_rx_top CODED=1
+run tb_phy_ldpc_dec
+run tb_phy_llr_demap
+run tb_phy_noise_est
+run tb_phy_mmse_post
+run tb_phy_rx_decode_ldpc
 run tb_phy_regs_axil
 run tb_phy_rx_axis_top
 run tb_phy_tx_axis_top

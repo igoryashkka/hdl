@@ -225,8 +225,8 @@ module phy_channel_estimator
   phy_tau_est u_tau (.clk, .rst, .start(tstart), .p_re(pacc_r), .p_im(pacc_i), .tau_valid, .tau_q8);
 
   // ---------------------------------------------------------------- weight RAM (write at stage O, synchronous read port)
-  logic [39:0] wram [NA];
-  logic [39:0] wram_e [NA];                      // mirror read by the post engine
+  (* ram_style = "block" *) logic [39:0] wram [NA];
+  (* ram_style = "block" *) logic [39:0] wram_e [NA];                      // mirror read by the post engine
   logic signed [11:0] lgram [NA];
   always_ff @(posedge clk) begin
     if (vo) begin wram[ao] <= w_o; wram_e[ao] <= w_o; lgram[ao] <= lg_pipe[11]; end

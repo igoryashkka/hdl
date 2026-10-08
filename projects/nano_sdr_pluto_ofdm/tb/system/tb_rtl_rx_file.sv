@@ -6,11 +6,12 @@
 //     E <n_best> <n_decl> <clk>   detector event          C <cfo_inc> <clk>  NCO increment
 //     Q <re> <im>                 equalised / derotated data bins (DEBUG=1)
 //     W <s> <hex40>               channel weights of the packet (DEBUG=1)
-//     S <det> <pkt> <drop> <wd> <flags> <total_clks>
-// Generics: NS, NSYMS, RMIN, GAIN_SH, CLKS_PER_SAMPLE (2 = l_clk 61.44 MHz for 30.72 MS/s), IDLE_LIMIT, DEBUG.
+//     S <det> <pkt> <drop> <wd> <flags> <total_clks> <codewords> <codewords_failed>
+// Generics: CODED, MMSE, MAX_ITER, FT_EN, TAU_TGT, NS, NSYMS, RMIN, GAIN_SH, CLKS_PER_SAMPLE (2 = l_clk 61.44 MHz for 30.72 MS/s), IDLE_LIMIT, DEBUG.
 module tb_rtl_rx_file #(
   parameter int NS = 1000, parameter int NSYMS = 2, parameter int RMIN = 262144, parameter int GAIN_SH = 0,
-  parameter int CLKS_PER_SAMPLE = 2, parameter int IDLE_LIMIT = 60000, parameter int DEBUG = 1
+  parameter int CLKS_PER_SAMPLE = 2, parameter int IDLE_LIMIT = 60000, parameter int DEBUG = 1,
+  parameter bit CODED = 1'b0, parameter bit MMSE = 1'b1, parameter int MAX_ITER = 10, parameter bit FT_EN = 1'b1, parameter int TAU_TGT = 56
 );
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
@@ -21,11 +22,11 @@ module tb_rtl_rx_file #(
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   logic [15:0] st_det_count, st_pkt_count, st_drop_count, st_wd_count; logic [7:0] st_flags; logic st_busy;
-  logic cfg_mmse = 1; logic [4:0] cfg_max_iter = 10; logic signed [12:0] cfg_bad_thr = 106; logic cfg_ft_en = 1; logic [7:0] cfg_tau_tgt = 56;
+  logic cfg_mmse = MMSE; logic [4:0] cfg_max_iter = MAX_ITER; logic signed [12:0] cfg_bad_thr = 106; logic cfg_ft_en = FT_EN; logic [7:0] cfg_tau_tgt = TAU_TGT;
   logic signed [19:0] st_tau_q8; logic signed [7:0] st_w0_adj;
   logic [15:0] st_snr_avg, st_snr_min, st_bad, st_noise, st_cw_count, st_cwfail_count; logic [7:0] st_ldpc_fail; logic [4:0] st_ldpc_imax; logic [11:0] st_ldpc_isum;
   logic [15:0] st_rssi, st_angle, st_seq; logic [31:0] st_evm, st_cfo_inc, st_nbest; logic st_pkt_pulse;
-  phy_rx_top dut (.*);
+  phy_rx_top #(.CODED(CODED)) dut (.*);
 
   int fd, cyc = 0, t_first = -1, t_last_beat = 0, nbeat = 0;
   always @(posedge clk) cyc <= cyc + 1;
@@ -61,7 +62,7 @@ module tb_rtl_rx_file #(
       int idle_start = cyc;
       while (cyc - ((t_last_beat > idle_start) ? t_last_beat : idle_start) < IDLE_LIMIT) @(posedge clk);
     end
-    $fdisplay(fd, "S %0d %0d %0d %0d %0d %0d", st_det_count, st_pkt_count, st_drop_count, st_wd_count, st_flags, cyc);
+    $fdisplay(fd, "S %0d %0d %0d %0d %0d %0d %0d %0d", st_det_count, st_pkt_count, st_drop_count, st_wd_count, st_flags, cyc, st_cw_count, st_cwfail_count);
     $fclose(fd);
     $finish;
   end

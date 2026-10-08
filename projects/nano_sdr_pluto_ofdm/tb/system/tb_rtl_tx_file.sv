@@ -5,11 +5,11 @@
 //     I <hex8>          IQ sample {I16,Q16} while valid          Z <n>   n sample strobes without data (idle / underflow)
 //     T <first_byte_clk> <last_byte_clk> <first_iq_clk> <last_iq_clk> <total_clks> <last_byte_of_first_packet_clk>
 //     S <underflow_pulses> <overflow> <pkt_done_count>
-// Generics: NB, NPKT, GAIN, CLKS_PER_SAMPLE, IDLE_LIMIT (strobes without data before the run ends), PKT_GAP_CLKS (idle clocks
+// Generics: CODED (LDPC PHY), NB, NPKT, GAIN, CLKS_PER_SAMPLE, IDLE_LIMIT (strobes without data before the run ends), PKT_GAP_CLKS (idle clocks
 // between the end of one packet's byte stream and the next one, i.e. the host-side packet pacing).
 module tb_rtl_tx_file #(
   parameter int NB = 1100, parameter int NPKT = 1, parameter int GAIN = 16384, parameter int CLKS_PER_SAMPLE = 2,
-  parameter int IDLE_LIMIT = 6000, parameter int PKT_GAP_CLKS = 0
+  parameter int IDLE_LIMIT = 6000, parameter int PKT_GAP_CLKS = 0, parameter bit CODED = 1'b0
 );
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
@@ -18,7 +18,7 @@ module tb_rtl_tx_file #(
   logic s_valid = 0, s_ready, s_last = 0; logic [7:0] s_data = 0;
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
-  phy_tx_top dut (.clk, .rst, .gain, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
+  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
                   .underflow, .overflow, .pkt_trunc, .pkt_done, .busy);
 
   int fd, cyc = 0, t_first_byte = -1, t_last_byte = -1, t_p0_last_byte = -1, t_first_iq = -1, t_last_iq = -1, n_under = 0, n_done = 0;

@@ -50,9 +50,9 @@ module phy_ldpc_dec
   logic        dw_en;
   logic [5:0]  dw_col;
   lv_t         dw_data;
-  logic [5:0]  rd_addr [2];
+  (* max_fanout = 24 *) logic [5:0]  rd_addr [2];
   lv_t         rd_data [2];
-  logic [5:0]  s0_col;
+  (* max_fanout = 24 *) logic [5:0]  s0_col;
   logic        dec_busy;
 
   assign in_ready = !occ[ld_sel];
@@ -106,16 +106,20 @@ module phy_ldpc_dec
     for (gb = 0; gb < 2; gb++) begin : g_bank
       for (gp = 0; gp < Z; gp++) begin : g_el
         logic signed [LW-1:0] mem [LNB];
-        logic              l_we;
-        logic signed [5:0] l_d;
+        logic              l_we_c, l_we;
+        logic signed [5:0] l_d_c, l_d;
+        logic [5:0]        l_col;
         always_comb begin
-          l_we = 1'b0; l_d = '0;
+          l_we_c = 1'b0; l_d_c = '0;
           for (int j = 0; j < 4; j++)
-            if (lq_v && lq_sel == 1'(gb) && lq_p[j] == 6'(gp)) begin l_we = 1'b1; l_d = lq_d[j]; end
+            if (lq_v && lq_sel == 1'(gb) && lq_p[j] == 6'(gp)) begin l_we_c = 1'b1; l_d_c = lq_d[j]; end
+        end
+        always_ff @(posedge clk) begin           // element-local write registers (timing: no fan-out of the loader signals into the RAMs)
+          l_we <= l_we_c; l_d <= l_d_c; l_col <= lq_col;
         end
         wire d_we = dw_en && (dec_sel == 1'(gb));
         always_ff @(posedge clk) begin
-          if (l_we)      mem[lq_col] <= LW'(l_d);
+          if (l_we)      mem[l_col] <= LW'(l_d);
           else if (d_we) mem[dw_col] <= dw_data[gp];
         end
         assign rd_data[gb][gp] = mem[rd_addr[gb]];
@@ -159,6 +163,7 @@ module phy_ldpc_dec
   logic [4:0]  s0_k, s1_k, s2_k, s3_k, s4_k, s5_k;
   logic [5:0]  s0_dl, s1_dl, s2_dl;
   lv_t         s1_d, s2_d, s3_d, s3_r, s4_q, s4_lr, s5_q, s5_lr;
+  logic [MW-1:0] s5_am [Z];                       // |s5_q| clamped to MMAX, computed one stage earlier (timing)
 
   wire issue1 = (dst == D_P1);
   wire issue2 = (dst == D_P2);
@@ -203,6 +208,11 @@ module phy_ldpc_dec
       s4_lr[r] <= s3_d[r];
     end
     s5_v <= s4_v; s5_k <= s4_k; s5_q <= s4_q; s5_lr <= s4_lr;
+    for (int r = 0; r < Z; r++) begin
+      logic [LW-1:0] a0;
+      a0 = s4_q[r][LW-1] ? LW'(-s4_q[r]) : LW'(s4_q[r]);
+      s5_am[r] <= (a0 > LW'(MMAX)) ? MW'(MMAX) : a0[MW-1:0];
+    end
   end
 
   // ---- check-node accumulation (stage s5), buffers, ring
@@ -214,10 +224,8 @@ module phy_ldpc_dec
     end
     if (s5_v) begin
       for (int r = 0; r < Z; r++) begin
-        logic [LW-1:0] a;
         logic [MW-1:0] am;
-        a  = s5_q[r][LW-1] ? LW'(-s5_q[r]) : LW'(s5_q[r]);
-        am = (a > LW'(MMAX)) ? MW'(MMAX) : a[MW-1:0];
+        am = s5_am[r];
         if (am < w_m1[r]) begin w_m2[r] <= w_m1[r]; w_m1[r] <= am; w_idx[r] <= s5_k; end
         else if (am < w_m2[r]) w_m2[r] <= am;
         w_par[r] <= w_par[r] ^ s5_q[r][LW-1];

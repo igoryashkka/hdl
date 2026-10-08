@@ -125,13 +125,15 @@ module phy_mmse_post
   // write: weights (MMSE only) and parameters of the data bins
   // ---- quality metrics (stage S3 has the clamped d of every bin)
   logic signed [12:0] qmin; logic [10:0] qbad; logic qrun;
+  logic v2q, f2q, badq; logic signed [14:0] d3q;      // one register stage in front of the min / count update (timing)
   always_ff @(posedge clk) begin
+    v2q <= v2 & ~(rst | clr); f2q <= (k2 == 11'd0); d3q <= d3; badq <= (d3 < 15'(cfg_bad_thr));
     if (rst || clr) begin qmin <= 13'sd4095; qbad <= '0; end
     else begin
-      if (v2 && k2 == 11'd0) begin qmin <= 13'(d3); qbad <= (d3 < 15'(cfg_bad_thr)) ? 11'd1 : 11'd0; end
-      else if (v2) begin
-        if (13'(d3) < qmin) qmin <= 13'(d3);
-        if (d3 < 15'(cfg_bad_thr)) qbad <= qbad + 1'b1;
+      if (v2q && f2q) begin qmin <= 13'(d3q); qbad <= badq ? 11'd1 : 11'd0; end
+      else if (v2q) begin
+        if (13'(d3q) < qmin) qmin <= 13'(d3q);
+        if (badq) qbad <= qbad + 1'b1;
       end
     end
   end

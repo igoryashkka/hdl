@@ -61,7 +61,7 @@ module phy_tx_axis_top #(
   (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI RREADY" *)  input         s_axi_rready
 );
   localparam NCFG = 3;
-  localparam NST  = 16;
+  localparam NST  = 32;
   localparam [31:0] MAGIC = 32'h4F465458;
   localparam [1:0] S_HDR = 2'd0, S_BODY = 2'd1, S_DRAIN = 2'd2;
 
@@ -176,22 +176,27 @@ module phy_tx_axis_top #(
     end
   end
 
-  assign stat = {
-    n_dropped,                              // 15
-    last_iq,                                // 14
-    {16'd0, gain_w},                        // 13
-    gap_cnt,                                // 12
-    {28'd0, st, 1'b0, phy_busy},            // 11 (bit0 busy, bits[3:2] state)
-    {16'd0, last_nb},                       // 10
-    n_stall, n_beat,                        // 9, 8
-    pk_q, pk_i,                             // 7
-    n_act,                                  // 6
-    n_busy,                                 // 5
-    n_clk, n_samp,                          // 4, 3
-    n_bad, n_unf,                           // 2
-    n_trunc, n_ovf,                         // 1
-    n_done, n_acc                           // 0
-  };
+  wire [31:0] sw [0:NST-1];
+  assign sw[0]  = {n_done, n_acc};
+  assign sw[1]  = {n_trunc, n_ovf};
+  assign sw[2]  = {n_bad, n_unf};
+  assign sw[3]  = n_samp;
+  assign sw[4]  = n_clk;
+  assign sw[5]  = n_busy;
+  assign sw[6]  = n_act;
+  assign sw[7]  = {pk_q, pk_i};
+  assign sw[8]  = n_beat;
+  assign sw[9]  = n_stall;
+  assign sw[10] = {16'd0, last_nb};
+  assign sw[11] = {28'd0, st, 1'b0, phy_busy};
+  assign sw[12] = gap_cnt;
+  assign sw[13] = {16'd0, gain_w};
+  assign sw[14] = last_iq;
+  assign sw[15] = n_dropped;
+  genvar gi;
+  generate for (gi = 16; gi < 31; gi = gi + 1) begin : g_rsv assign sw[gi] = 32'd0; end endgenerate
+  assign sw[31] = {31'd0, CODED};
+  generate for (gi = 0; gi < NST; gi = gi + 1) begin : g_stat assign stat[32*gi +: 32] = sw[gi]; end endgenerate
 
   phy_regs_axil #(
     .ID(32'h4F465458), .NCFG(NCFG), .NST(NST),

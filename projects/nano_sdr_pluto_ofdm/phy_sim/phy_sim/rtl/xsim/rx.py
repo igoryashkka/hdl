@@ -41,7 +41,9 @@ class RtlSimRxBackend(RxBackend):
         mem = "\n".join(f"{(a << 16) | b:08x}" for a, b in zip(i, q)) + "\n"
         rxc = self.cfg["rx"]
         debug = 1 if self.cfg.get("rtl", {}).get("debug", True) else 0
-        gen = {"NS": len(iq), "NSYMS": self.nsyms, "RMIN": int(rxc.get("rmin", 262144)), "GAIN_SH": int(rxc.get("gain_sh", 0)),
+        ph = self.cfg.get("phy", {})
+        gen = {"CODED": 1 if refs.phy_code(self.cfg) == "ldpc" else 0, "MMSE": 1 if ph.get("eq", "mmse") == "mmse" else 0, "MAX_ITER": int(ph.get("max_iter", 10)),
+               "FT_EN": 1 if ph.get("fine_timing", True) else 0, "TAU_TGT": int(ph.get("tau_target", 56)), "NS": len(iq), "NSYMS": self.nsyms, "RMIN": int(rxc.get("rmin", 262144)), "GAIN_SH": int(rxc.get("gain_sh", 0)),
                "CLKS_PER_SAMPLE": self.CLKS_PER_SAMPLE, "DEBUG": debug}
         sim = Simulator(self.cfg)
         out = sim.run("tb_rtl_rx_file", gen, {"rtl_rx_in.mem": mem})["rtl_rx_out.txt"]
@@ -68,7 +70,8 @@ class RtlSimRxBackend(RxBackend):
             elif t[0] == "W":
                 weights.setdefault(len(incs), {})[int(t[1])] = int(t[2], 16)
             elif t[0] == "S":
-                status = {"det": int(t[1]), "pkt": int(t[2]), "drop": int(t[3]), "wd": int(t[4]), "flags": int(t[5]), "clks": int(t[6])}
+                status = {"det": int(t[1]), "pkt": int(t[2]), "drop": int(t[3]), "wd": int(t[4]), "flags": int(t[5]), "clks": int(t[6]),
+                          "cw": int(t[7]) if len(t) > 7 else 0, "cw_fail": int(t[8]) if len(t) > 8 else 0}
         # beats -> packets
         pkts, cur, first_clk = [], [], []
         for data, last, clk in beats:
@@ -92,11 +95,22 @@ class RtlSimRxBackend(RxBackend):
             h0 = p[0]
             nbytes = (h0 >> 16) & 0xFFFF
             flags = (h0 >> 32) & 0xFF
-            raw = b"".join(int(w).to_bytes(8, "little") for w in p[3:])[:nbytes]
+            ver = (h0 >> 40) & 0xFF
+            nh = 6 if ver == 3 else 3
+            raw = b"".join(int(w).to_bytes(8, "little") for w in p[nh:])[:nbytes]
             self.payloads.append(raw)
             h2 = p[2]
-            pk = {"bytes": raw, "flags": flags, "seq": h0 & 0xFFFF, "header": p[:3], "version": (h0 >> 40) & 0xFF,
+            pk = {"bytes": raw, "flags": flags, "seq": h0 & 0xFFFF, "header": p[:nh], "version": ver,
                   "angle16": (h2 >> 48) & 0xFFFF, "rssi_code": (h2 >> 32) & 0xFFFF, "evm_sum": h2 & 0xFFFFFFFF}
+            if ver == 3:
+                sg = lambda v, w: v - (1 << w) if v >= (1 << (w - 1)) else v
+                b3, b4, b5 = p[3], p[4], p[5]
+                k_ = 3.0103 / 32
+                pk.update({"snr_avg_db": sg((b3 >> 48) & 0xFFFF, 16) * k_, "snr_min_db": sg((b3 >> 32) & 0xFFFF, 16) * k_,
+                           "bad_subcarriers": (b3 >> 16) & 0xFFFF, "noise_code": sg(b3 & 0xFFFF, 16),
+                           "ldpc_failures": (b4 >> 56) & 0xFF, "ldpc_iterations": [((b4 >> 32) & 0xFFF) / (2 * nsyms)] * (2 * nsyms), "ldpc_iter_max": (b4 >> 48) & 0x1F,
+                           "ldpc_codewords": 2 * nsyms, "tau_q8": sg(b4 & 0xFFFFF, 20), "angle_first": (b5 >> 32) & 0xFFFFFFFF,
+                           "sfo_slope_last": sg(b5 & 0xFFFFFFFF, 32)})
             sl = slice(k * nsyms * refs.P.NUM_DATA_SC, (k + 1) * nsyms * refs.P.NUM_DATA_SC)
             if len(q_all) >= sl.stop:
                 pk["eq"] = q_all[sl].reshape(nsyms, refs.P.NUM_DATA_SC)
