@@ -1,0 +1,282 @@
+<title>RX Enhancement Z7020</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+/*STYLE*/
+<style>#sum_tbl td:first-child,#imp_tbl td:first-child,#res_tbl td:first-child,#thr_tbl td:first-child{min-width:230px}#sum_tbl td.n{white-space:normal}</style>
+<div class="wrap">
+<header>
+  <div class="kicker">Nano SDR Pluto · ТЗ 004 · гілка OFDM_PHY_Z7020_RXENH · phy_sim + xsim + Vivado (xc7z020)</div>
+  <h1>RX: оптимізація під Zynq-7020 і два алгоритмічні патчі</h1>
+  <p class="lead">Приймач dual-mode PHY зменшено на третину LUT без зміни функції, поверх нього додано Patch A (uncertainty-aware LLR) і Patch B (один code-aided прохід). Кожну конфігурацію порівняно на однакових каналах і даних у бітово-точних моделях і в RTL-симуляції та синтезовано.</p>
+  <div class="banner">Усі числа отримано в симуляції та з Vivado. На реальному радіо нічого не вимірювалось: чутливість приймача тут не підтверджується, RF-вимірювання потрібні окремо. Імплементацію (place and route) для патчів за рішенням замовника відкладено: для них є лише синтез, справжній timing slack ще не виміряно. SNR скрізь на відлік у смузі 30.72 МГц.</div>
+  <div class="stats" id="stats"></div>
+</header>
+<nav class="idx" id="idx"></nav>
+
+<section id="s1"><h2><span class="n">1</span>Baseline → Patch A → Patch B</h2><p class="sub" id="sum_sub"></p><div class="card scroll" id="sum_tbl"></div></section>
+<section id="s2"><h2><span class="n">2</span>PER проти SNR</h2><p class="sub" id="per_sub"></p><div class="grid2" id="per_ch"></div><div class="card scroll" id="thr_tbl" style="margin-top:14px"></div></section>
+<section id="s3"><h2><span class="n">3</span>BER, FER, EVM, швидкість</h2><p class="sub">Той самий прогін, що й у розділі 2. Швидкість це PHY-швидкість режиму, помножена на частку прийнятих пакетів.</p><div id="m_tabs" class="key" style="margin-bottom:10px"></div><div class="grid2"><div class="card chart" id="ch_ber"></div><div class="card chart" id="ch_fer"></div><div class="card chart" id="ch_evm"></div><div class="card chart" id="ch_thr"></div></div></section>
+<section id="s4"><h2><span class="n">4</span>Оптимізація RX під Zynq-7020</h2><p class="sub" id="opt_sub"></p><div class="card scroll" id="opt_tbl"></div><div class="card" style="margin-top:14px"><ul class="plain" id="opt_list"></ul></div></section>
+<section id="s5"><h2><span class="n">5</span>Patch A: uncertainty-aware LLR</h2><div class="grid2"><div class="card"><ul class="plain" id="pa_list"></ul></div><div class="card scroll" id="pa_tbl"></div></div></section>
+<section id="s6"><h2><span class="n">6</span>Patch B: code-aided прохід</h2><p class="sub">Блок <code>phy_ca_refine</code> стоїть збоку від основного тракту: слухає перший прохід і лише коли хоч одне кодове слово не зійшлося, відтворює пакет ще раз.</p><div class="card" id="pb_flow"></div><div class="grid2" style="margin-top:14px"><div class="card chart" id="ch_p2"></div><div class="card scroll" id="pb_tbl"></div></div><div class="card" style="margin-top:14px"><h3>Умови застосування</h3><ul class="plain" id="pb_cond" style="margin-top:8px"></ul></div></section>
+<section id="s7"><h2><span class="n">7</span>Що робити далі: діагностика</h2><p class="sub">Третій алгоритм у RTL не реалізовано. Нижче вимірювання, за якими обрано напрям.</p><div class="grid2"><div class="card chart" id="ch_est"></div><div class="card chart" id="ch_det"></div></div><div class="card scroll" id="imp_tbl" style="margin-top:14px"></div><div class="card" style="margin-top:14px"><ul class="plain" id="diag_list"></ul></div></section>
+<section id="s8"><h2><span class="n">8</span>Перевірка RTL</h2><p class="sub" id="rtl_sub"></p><div class="card scroll" id="rtl_tbl"></div><div class="grid2" style="margin-top:14px"><div class="card scroll" id="reg_tbl"></div><div class="card"><h3>Знайдені дефекти і відмінності Python / RTL</h3><ul class="plain" id="bug_list" style="margin-top:8px"></ul></div></div></section>
+<section id="s9"><h2><span class="n">9</span>Ресурси і таймінг</h2><p class="sub" id="res_sub"></p><div class="card scroll" id="res_tbl"></div><div class="card scroll" id="res_hier" style="margin-top:14px"></div></section>
+<section id="s10"><h2><span class="n">10</span>Критерії приймання і обмеження</h2><div class="card scroll" id="crit"></div><details style="margin-top:12px"><summary>Метод і відтворення</summary><ul class="plain" style="margin-top:10px" id="method"></ul></details></section>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = /*DATA*/null;
+const OLDIMPL = !DATA.impl.baseline && !!DATA.impl_old; if (OLDIMPL) DATA.impl.baseline = DATA.impl_old;
+const ST = DATA.study, DG = DATA.diag, DT = DATA.det, RTL = DATA.rtl, IM = DATA.impl, SY = DATA.synth, OPT = DATA.opt, RG = DATA.regression;
+const $ = (s,r=document)=>r.querySelector(s);
+const f1 = v => v==null?'–':v.toFixed(1), f2 = v => v==null?'–':v.toFixed(2);
+const pct = v => v==null?'–':(v*100).toFixed(v<0.1&&v>0?1:0)+' %';
+const num = v => v==null?'–':Math.round(v).toLocaleString('uk-UA');
+const CF = ['baseline','patch_a','patch_b'];
+const CN = {baseline:'Baseline', patch_a:'Patch A', patch_b:'Patch B'};
+const COL = {baseline:'var(--s1)', patch_a:'var(--s2)', patch_b:'var(--s3)'};
+const MN = {max_range:'MAX RANGE (QPSK, LDPC 1/2)', max_rate:'MAX RATE (16-QAM, LDPC 5/6)'};
+const MS = {max_range:'MAX RANGE', max_rate:'MAX RATE'};
+const CHS = {awgn:'AWGN', mp3:'3 промені', impaired:'3 промені + CFO, SFO, зсув, фазовий шум'};
+const BPS = {max_range:135, max_rate:450}, FS = 30.72e6, SYML = 2192, CLK = 61.44e6;
+const RATE = m => BPS[m]*8*FS/SYML/1e6, RATE8 = m => BPS[m]*8*8/((8+3)*SYML/FS)/1e6;
+const MODES = ST?Object.keys(ST.curves):[];
+const C = (m,c,k)=>ST.curves[m][c][k];
+
+/* SNR at which PER falls to lim and stays below: log-linear interpolation between the last point above and the next one */
+function cross(pts, lim, key){
+  const v = p => key?p.ci[key==='lo'?0:1]:p.per;
+  let i=-1; pts.forEach((p,k)=>{if(v(p)>lim)i=k});
+  if(i<0||i===pts.length-1)return null;
+  const a=pts[i], b=pts[i+1], fl=0.5/b.packets, ya=Math.log10(Math.max(v(a),fl)), yb=Math.log10(Math.max(v(b),fl)), yl=Math.log10(lim);
+  return ya===yb?b.x:a.x+(b.x-a.x)*(ya-yl)/(ya-yb);
+}
+const TH={}; MODES.forEach(m=>{TH[m]={};Object.keys(ST.curves[m]).forEach(c=>{TH[m][c]={};CF.forEach(k=>{const p=C(m,c,k);TH[m][c][k]={x:cross(p,.01),lo:cross(p,.01,'lo'),hi:cross(p,.01,'hi')}})})});
+const gain=(m,c,k)=>(TH[m][c].baseline.x!=null&&TH[m][c][k].x!=null)?TH[m][c].baseline.x-TH[m][c][k].x:null;
+const sgn = v => v==null?'–':(v>=0?'+':'−')+Math.abs(v).toFixed(2);
+
+function xyChart(host,o){
+  const W=520,H=o.h||250,m={l:50,r:12,t:10,b:o.xlabel?38:26},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const all=o.series.flatMap(s=>s.pts.filter(p=>p.y!=null).map(p=>p.x));const x0=o.x0??Math.min(...all),x1=o.x1??Math.max(...all);
+  const ymax=o.ymax||1,ymin=o.log?(o.ymin||1e-3):0;
+  const X=x=>m.l+(x1>x0?(x-x0)/(x1-x0):.5)*iw;
+  const Y=v=>{if(o.log){const l=Math.log10(Math.min(Math.max(v,ymin),ymax));return m.t+ih-((l-Math.log10(ymin))/(Math.log10(ymax)-Math.log10(ymin)))*ih}return m.t+ih-(Math.min(Math.max(v,0),ymax)/ymax)*ih};
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${o.title}">`;
+  const yt=o.yticks||(o.log?[1e-3,1e-2,1e-1,1]:[0,.25,.5,.75,1].map(t=>t*ymax));
+  yt.forEach(t=>{s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(t)}" y2="${Y(t)}" style="stroke:var(--grid)"/><text class="ax" x="${m.l-6}" y="${Y(t)+4}" text-anchor="end">${o.yfmt?o.yfmt(t):(o.log?(t>=1?'1':t.toExponential(0).replace('e-','e−')):Math.round(t*100)+'%')}</text>`});
+  (o.hlines||[]).forEach(h=>{s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(h.y)}" y2="${Y(h.y)}" style="stroke:var(--muted)" stroke-dasharray="4 4"/><text class="ax" x="${W-m.r}" y="${Y(h.y)-4}" text-anchor="end">${h.label}</text>`});
+  const xt=[];const stp=o.xstep||Math.max(.5,Math.ceil((x1-x0)/8));for(let x=Math.ceil(x0/stp)*stp;x<=x1+1e-9;x+=stp)xt.push(x);
+  xt.forEach(x=>{s+=`<text class="ax" x="${X(x)}" y="${H-m.b+15}" text-anchor="middle">${o.xfmt?o.xfmt(x):x}</text>`});
+  if(o.xlabel)s+=`<text class="axl" x="${m.l+iw/2}" y="${H-3}" text-anchor="middle">${o.xlabel}</text>`;
+  o.series.forEach(se=>{
+    se.pts.forEach(p=>{if(p.y!=null&&p.lo!=null)s+=`<line x1="${X(p.x).toFixed(1)}" x2="${X(p.x).toFixed(1)}" y1="${Y(p.lo).toFixed(1)}" y2="${Y(p.hi).toFixed(1)}" style="stroke:${se.color}" stroke-width="1" opacity=".55"/>`});
+    let d='',pen=false;se.pts.forEach(p=>{if(p.y==null){pen=false;return}d+=(pen?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1)+' ';pen=true});
+    s+=`<path d="${d}" fill="none" style="stroke:${se.color}" stroke-width="2" stroke-linejoin="round" ${se.dash?'stroke-dasharray="5 4"':''}/>`;
+    se.pts.forEach(p=>{if(p.y!=null)s+=`<circle cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="2.8" style="fill:${se.color};stroke:var(--surface)" stroke-width="1.4"/>`});
+  });
+  s+=`<line class="cx" x1="0" x2="0" y1="${m.t}" y2="${m.t+ih}" style="stroke:var(--muted)" opacity="0"/><rect class="hit" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  host.innerHTML=`<div class="ttl"><h3>${o.title}</h3><small>${o.note||''}</small></div>`+(o.series.length>1?`<div class="legend">${o.series.map(se=>`<span><i style="background:${se.color}"></i>${se.name}</span>`).join('')}</div>`:'')+s;
+  const svg=$('svg',host),hit=$('.hit',host),cx=$('.cx',host),tip=$('#tip');
+  hit.addEventListener('mousemove',ev=>{
+    const r=svg.getBoundingClientRect(),px=(ev.clientX-r.left)/r.width*W,xv=x0+(px-m.l)/iw*(x1-x0);
+    const rows=o.series.map(se=>{let bp=null,bd=1e9;se.pts.forEach(p=>{if(p.y==null)return;const d=Math.abs(p.x-xv);if(d<bd){bd=d;bp=p}});return bp&&bd<(x1-x0)/8?[se,bp]:null}).filter(Boolean);
+    if(!rows.length){tip.style.display='none';return}
+    cx.setAttribute('x1',X(rows[0][1].x));cx.setAttribute('x2',X(rows[0][1].x));cx.setAttribute('opacity',1);
+    tip.innerHTML=`<b>${rows[0][1].x} дБ</b>`+rows.map(([se,p])=>`<div><span><i style="background:${se.color}"></i>${se.name}</span><b>${o.vfmt?o.vfmt(p.y,p):pct(p.y)}</b></div>`).join('');
+    tip.style.display='block';tip.style.position='absolute';let tx=ev.clientX+14;if(tx+250>window.innerWidth)tx=ev.clientX-250;tip.style.left=tx+'px';tip.style.top=(ev.clientY+14+window.scrollY)+'px';
+  });
+  hit.addEventListener('mouseleave',()=>{cx.setAttribute('opacity',0);tip.style.display='none'});
+}
+const tbl=(head,rows,cls)=>'<table><thead><tr>'+head.map((h,i)=>`<th class="${i&&cls!=='t'?'n':''}">${h}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>`<tr${r.hl?' class="hl"':''}>`+r.map((c,i)=>`<td class="${i&&cls!=='t'?'n':''}">${c}</td>`).join('')+'</tr>').join('')+'</tbody></table>';
+const pill=(ok,a,b)=>`<span class="pill ${ok===true?'good':ok===false?'bad':'warn'}">${ok===true?(a||'так'):ok===false?(b||'ні'):(a||'частково')}</span>`;
+
+/* ---------- resources helpers ---------- */
+const phy = k => IM[k]&&IM[k].phy, tot = k => IM[k]&&IM[k].total, tim = k => IM[k]&&IM[k].timing;
+const bram = p => p?p.bram36+p.bram18/2:null;
+const hrow=(k,inst)=>SY[k]?(SY[k].hier.find(r=>r.inst===inst)||null):null;
+
+/* ---------- hero ---------- */
+{const ob=OPT.before&&OPT.before.util, oa=OPT.after&&OPT.after.util;
+ const gB=MODES.map(m=>gain(m,'awgn','patch_b')).filter(v=>v!=null), gA=MODES.flatMap(m=>Object.keys(ST.curves[m]).map(c=>gain(m,c,'patch_a'))).filter(v=>v!=null);
+ const allB=MODES.flatMap(m=>Object.keys(ST.curves[m]).map(c=>gain(m,c,'patch_b'))).filter(v=>v!=null);
+ const ex=RTL?RTL.runs.reduce((a,r)=>a+r.replay_exact,0):0, pk=RTL?RTL.runs.reduce((a,r)=>a+r.packets_rtl,0):0;
+ $('#stats').innerHTML=[
+  [ob&&oa?'−'+Math.round((1-oa.lut/ob.lut)*100)+' %':'–','LUT приймача після оптимізації ('+(ob?num(ob.lut):'–')+' → '+(oa?num(oa.lut):'–')+', синтез), функція та бітова точність без змін'],
+  [allB.length?sgn(Math.min(...allB))+' … '+sgn(Math.max(...allB))+' дБ':'–','Patch B: виграш SNR при PER = 1 % проти Baseline по всіх режимах і каналах'],
+  [gA.length?sgn(Math.min(...gA))+' … '+sgn(Math.max(...gA))+' дБ':'–','Patch A: виграш SNR при PER = 1 %; у межах статистичної похибки'],
+  [pk?ex+' / '+pk:'–','пакетів RTL, що бітово збіглися з fixed-моделлю бекенду (байти, ітерації, другий прохід)']
+ ].map(a=>`<div class="stat"><b>${a[0]}</b><span>${a[1]}</span></div>`).join('');}
+const SEC=['Підсумок','PER','BER FER EVM','Оптимізація','Patch A','Patch B','Діагностика','Перевірка RTL','Ресурси','Критерії'];
+$('#idx').innerHTML=SEC.map((s,i)=>`<a href="#s${i+1}">${i+1} ${s}</a>`).join('');
+
+/* ---------- latency from the RTL runs ---------- */
+const med=a=>{if(!a.length)return null;const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)]};
+function lat(mode,cfg){if(!RTL)return null;const rs=RTL.runs.filter(r=>r.mode===mode&&r.config===cfg);const l=rs.flatMap(r=>r.rx_latency_clks||[]);const p=rs.flatMap(r=>r.pass2_clks||[]);
+  return {first:l.length?Math.min(...l):null,med:med(l),max:l.length?Math.max(...l):null,p2med:med(p),p2max:p.length?Math.max(...p):null,n:l.length,np2:p.length}}
+const us=c=>c==null?'–':(c/CLK*1e6).toFixed(0)+' мкс';
+
+/* ---------- 1 summary ---------- */
+{const rows=[];
+ MODES.forEach(m=>Object.keys(ST.curves[m]).forEach(c=>{
+   rows.push([`SNR при PER = 1 %, ${MS[m]}, ${CHS[c]||c}`,...CF.map(k=>{const t=TH[m][c][k];const g=gain(m,c,k);return (t.x==null?'–':t.x.toFixed(2)+' дБ')+(k!=='baseline'&&g!=null?` <span class="pill ${g>0.1?'good':'warn'}">${sgn(g)}</span>`:'')})]);
+ }));
+ MODES.forEach(m=>rows.push([`PHY-швидкість ${MS[m]} (кадр із 8 символів)`,...CF.map(()=>RATE(m).toFixed(1)+' ('+RATE8(m).toFixed(1)+') Мбіт/с')]));
+ MODES.forEach(m=>{const l=CF.map(k=>lat(m,k));rows.push([`Затримка RX ${MS[m]}: останній відлік → перший beat (RTL, найкоротша)`,us(l[0]&&l[0].first),us(l[1]&&l[1].first),(l[2]?us(l[2].first)+'; з 2-м проходом +'+us(l[2].p2med)+' (до '+us(l[2].p2max)+')':'–')])});
+ rows.push(['LUT PHY / увесь проєкт (імплементація'+(OLDIMPL?', Baseline до двох пізніших виправлень':'')+')',...CF.map(k=>phy(k)?num(phy(k).lut)+' / '+num(tot(k).lut)+' ('+(tot(k).lut/53200*100).toFixed(0)+' %)':'–')]);
+ rows.push(['FF PHY / увесь проєкт',...CF.map(k=>phy(k)?num(phy(k).ff)+' / '+num(tot(k).ff)+' ('+(tot(k).ff/106400*100).toFixed(0)+' %)':'–')]);
+ rows.push(['BRAM (плитки 36 кбіт) PHY / увесь проєкт',...CF.map(k=>phy(k)?bram(phy(k))+' / '+tot(k).bram+' ('+(tot(k).bram/140*100).toFixed(0)+' %)':'–')]);
+ rows.push(['DSP PHY / увесь проєкт',...CF.map(k=>phy(k)?phy(k).dsp+' / '+tot(k).dsp+' ('+(tot(k).dsp/220*100).toFixed(0)+' %)':'–')]);
+ rows.push(['Setup slack WNS після імплементації (обмеження 8 нс)',...CF.map(k=>tim(k)&&tim(k).wns!=null?(tim(k).wns>=0?'+':'')+tim(k).wns.toFixed(3)+' нс':'–')]);
+ rows.push(['Hold slack WHS після імплементації',...CF.map(k=>tim(k)&&tim(k).whs!=null?'+'+tim(k).whs.toFixed(3)+' нс':'–')]);
+ rows.push(['Після синтезу (PHY окремо): LUT / FF / BRAM / DSP, WNS',...CF.map(k=>SY[k]?num(SY[k].util.lut)+' / '+num(SY[k].util.ff)+' / '+SY[k].util.bram+' / '+SY[k].util.dsp+(SY[k].timing.wns!=null?', '+(SY[k].timing.wns>=0?'+':'')+SY[k].timing.wns.toFixed(2)+' нс':''):'–')]);
+ $('#sum_tbl').innerHTML=tbl(['Показник',...CF.map(k=>CN[k])],rows);
+ $('#sum_sub').innerHTML=`Baseline це оптимізований PHY з виправленим змішувачем (розділ 8). Patch A = Baseline + uncertainty-aware LLR. Patch B = Patch A + один code-aided прохід. Пакети по ${ST.nsyms} символи даних, ті самі реалізації каналу, шуму й дані для трьох конфігурацій. Позначка біля значення це виграш відносно Baseline у дБ. У MAX RATE з дефектами крива PER має залишковий рівень близько 1 % (фазовий шум, розділ 7), тому поріг там умовний.`;}
+
+/* ---------- 2 PER ---------- */
+{const host=$('#per_ch');let n=0;
+ MODES.forEach(m=>Object.keys(ST.curves[m]).forEach(c=>{const d=document.createElement('div');d.className='card chart';host.appendChild(d);
+   xyChart(d,{title:`${MS[m]} · ${CHS[c]||c}`,note:'PER, довірчий інтервал 95 %',log:true,ymin:1e-3,xlabel:'SNR на відлік, дБ',xstep:(C(m,c,'baseline').slice(-1)[0].x-C(m,c,'baseline')[0].x)>6?2:1,
+     series:CF.map(k=>({name:CN[k],color:COL[k],dash:k==='patch_a',pts:C(m,c,k).map(p=>({x:p.x,y:p.per,lo:p.ci[0],hi:p.ci[1],n:p.packets,e:p.errors}))})),hlines:[{y:.01,label:'1 %'}],
+     vfmt:(v,p)=>pct(v)+' ('+p.e+' / '+p.n+')'})}));
+ const rows=[];MODES.forEach(m=>Object.keys(ST.curves[m]).forEach(c=>CF.forEach(k=>{const t=TH[m][c][k],g=gain(m,c,k);const near=C(m,c,k).filter(p=>p.per>0.001&&p.per<0.2);
+   rows.push([k==='baseline'?`${MS[m]}, ${CHS[c]||c}`:'',CN[k],t.x==null?'–':t.x.toFixed(2),(t.lo==null||t.hi==null)?'–':t.lo.toFixed(2)+' … '+t.hi.toFixed(2),k==='baseline'?'':sgn(g),near.length?Math.min(...near.map(p=>p.packets))+' … '+Math.max(...near.map(p=>p.packets)):String(C(m,c,k)[0].packets)])})));
+ $('#thr_tbl').innerHTML=tbl(['Режим, канал','Конфігурація','SNR при PER = 1 %, дБ','за межами довірчого інтервалу','виграш, дБ','пакетів на точку біля 1 %'],rows);
+ const pk=ST.packets_per_point;
+ $('#per_sub').innerHTML=`Крок сітки 0.5 дБ, ${pk} пакетів на точку, біля PER = 1 % точки добрано до більшої кількості (стовпчик праворуч у таблиці). SNR при PER = 1 % це лог-лінійна інтерполяція між сусідніми точками; інтервал отримано з меж довірчих інтервалів Вілсона тих самих точок. Втрачені (не виявлені) пакети рахуються як помилкові.`;}
+
+/* ---------- 3 BER / FER / EVM / throughput ---------- */
+let mSel=[MODES[0],'awgn'];
+function drawM(){const [m,c]=mSel;const ser=(key,f)=>CF.map(k=>({name:CN[k],color:COL[k],dash:k==='patch_a',pts:C(m,c,k).map(p=>({x:p.x,y:f?f(p):p[key]}))}));
+ const st=(C(m,c,'baseline').slice(-1)[0].x-C(m,c,'baseline')[0].x)>6?2:1;
+ xyChart($('#ch_ber'),{title:'BER (з урахуванням втрачених пакетів)',log:true,ymin:1e-5,yticks:[1e-5,1e-4,1e-3,1e-2,1e-1],ymax:.5,xlabel:'SNR на відлік, дБ',xstep:st,series:ser('ber'),vfmt:v=>v.toExponential(1)});
+ xyChart($('#ch_fer'),{title:'FER (частка кодових слів, що не зійшлися)',log:true,ymin:1e-3,xlabel:'SNR на відлік, дБ',xstep:st,series:ser('fer'),vfmt:v=>pct(v)});
+ const em=Math.max(...CF.flatMap(k=>C(m,c,k).map(p=>p.evm||0)));
+ xyChart($('#ch_evm'),{title:'EVM після еквалайзера і трекера',ymax:Math.ceil(em/10)*10,yfmt:t=>t.toFixed(0)+' %',xlabel:'SNR на відлік, дБ',xstep:st,series:ser('evm'),vfmt:v=>v.toFixed(1)+' %',note:'однаковий: патчі не змінюють перший прохід'});
+ xyChart($('#ch_thr'),{title:'Пропускна здатність PHY',ymax:Math.ceil(RATE(m)/5)*5,yfmt:t=>t.toFixed(0),xlabel:'SNR на відлік, дБ',xstep:st,series:ser(null,p=>RATE(m)*(1-p.per)),vfmt:v=>v.toFixed(1)+' Мбіт/с',note:'Мбіт/с'});
+ $('#m_tabs').innerHTML=MODES.flatMap(mm=>Object.keys(ST.curves[mm]).map(cc=>`<a href="#" data-m="${mm}" data-c="${cc}" style="text-decoration:none;color:${mm===m&&cc===c?'var(--accent)':'var(--ink2)'};font-weight:${mm===m&&cc===c?600:400}">${MS[mm]} · ${CHS[cc]||cc}</a>`)).join('');
+ $('#m_tabs').querySelectorAll('a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();mSel=[a.dataset.m,a.dataset.c];drawM()}));}
+drawM();
+
+/* ---------- 4 optimisation ---------- */
+{const b=OPT.before, a=OPT.after;
+ if(b&&a){const names={u_phy:'phy_rx_top разом',u_ldpc:'LDPC декодер',u_chest:'оцінювач каналу',u_fft:'FFT 2048',u_sync:'детектор Шмідля-Кокса',u_trk:'фазовий трекер',u_post:'MMSE движок',u_dec:'бекенд (демапер, деінтерлівер, декодер)',u_deint:'деінтерлівер',u_dm:'LLR демапер',u_eq:'еквалайзер',u_pkt:'буфер пакета'};
+  const rows=[['phy_rx_top разом',num(b.util.lut),num(a.util.lut),num(b.util.ff),num(a.util.ff),b.util.bram,a.util.bram,b.util.dsp,a.util.dsp]];rows[0].hl=true;
+  ['u_ldpc','u_chest','u_fft','u_sync','u_trk','u_post','u_deint','u_dm','u_eq'].forEach(i=>{const x=b.hier.find(r=>r.inst===i),y=a.hier.find(r=>r.inst===i);if(x&&y)rows.push([names[i],num(x.lut),num(y.lut),num(x.ff),num(y.ff),x.bram36+x.bram18/2,y.bram36+y.bram18/2,x.dsp,y.dsp])});
+  $('#opt_tbl').innerHTML=tbl(['Блок','LUT до','LUT після','FF до','FF після','BRAM до','BRAM після','DSP до','DSP після'],rows);
+  $('#opt_sub').innerHTML=`Синтез phy_rx_top окремо (out-of-context, xc7z020). До: v0.7.0 dual-mode PHY. Після: ${num(a.util.lut)} LUT, тобто −${Math.round((1-a.util.lut/b.util.lut)*100)} % LUT і −${Math.round((1-a.util.ff/b.util.ff)*100)} % FF ціною ${a.util.bram-b.util.bram} плиток BRAM. Усі блочні й системні тестбенчі після оптимізації проходять бітово-точно (${RG.baseline.filter(t=>t.pass).length} з ${RG.baseline.length}).`;}
+ $('#opt_list').innerHTML=['<b>LDPC декодер, кільце шарів.</b> Запис check-вузла шару читається знову через 6 або 18 шарів. Замість регістрів з мультиплексором запису на кожному біті тепер динамічний зсувний регістр (SRL з вибором відводу, <code>phy_dyn_sr</code>).',
+  '<b>LDPC декодер, буфер Q.</b> 18 × 480 біт повідомлень шару перенесено з 8.6 тис. тригерів і мультиплексора 18:1 у блочну пам\'ять.',
+  '<b>LDPC декодер, апостеріорна пам\'ять.</b> Два банки 36 × 480 біт перенесено з розподіленої пам\'яті в BRAM з побайтовим дозволом запису; вихідний регістр BRAM замінив окремий конвеєрний регістр, затримка та сама.',
+  '<b>Оцінювач каналу.</b> Дві копії пам\'яті ваг у LUT-RAM замінено однією BRAM; порт читання ділять у часі еквалайзер і MMSE движок, які не працюють одночасно.',
+  '<b>Кодер LDPC (TX).</b> Змінний зсув за модулем 60 замінено константними зсувами обох кодів.',
+  'Точність, розрядності даних і пропускна здатність не змінювались: порівняння з fixed-моделями лишається бітовим, час декодування на ітерацію той самий.'].map(x=>`<li>${x}</li>`).join('');}
+
+/* ---------- 5 patch A ---------- */
+{$('#pa_list').innerHTML=['<b>Ідея.</b> Похибка оцінки каналу множиться на переданий символ, тому шум гіпотези зростає з її енергією. Для 16-QAM це дає нахили LLR, що залежать від області: з d = |x| − T маємо L1 = (d · 57) >> 6, а для знакового біта при d > 0 величина T + ((d · 51) >> 6).',
+  '<b>QPSK.</b> Усі точки мають однакову енергію, поправка стає спільним множником усіх LLR і на min-sum декодер не впливає. Для MAX RANGE Patch A тотожний Baseline.',
+  '<b>RTL.</b> Один додатковий ступінь конвеєра в <code>phy_llr_demap</code>, множники 57 і 51 як зсуви з додаванням, без DSP. Вмикається бітом 3 регістра 0x1C.',
+  '<b>Результат.</b> Виграш у межах статистичної похибки в обох режимах і всіх каналах. Причина: з 3-біновим згладжуванням LTS похибка оцінки каналу на порядок менша за шум на піднесучій, тож і поправка мала. У float-моделі навіть демапер, який точно знає похибку оцінки на кожній піднесучій, дає близько 0.1 дБ.',
+  '<b>Висновок.</b> Вимірного виграшу немає, шкоди й помітних витрат теж. Патч лишається в RTL вимкненим за замовчуванням (параметр <code>UA_HW</code> прибирає його логіку зовсім).'].map(x=>`<li>${x}</li>`).join('');
+ const rows=[];MODES.forEach(m=>Object.keys(ST.curves[m]).forEach(c=>{const b=TH[m][c].baseline,a=TH[m][c].patch_a;rows.push([`${MS[m]}, ${CHS[c]||c}`,b.x==null?'–':b.x.toFixed(2),a.x==null?'–':a.x.toFixed(2),sgn(gain(m,c,'patch_a'))])}));
+ $('#pa_tbl').innerHTML=tbl(['Режим, канал','Baseline, дБ','Patch A, дБ','виграш, дБ'],rows);}
+
+/* ---------- 6 patch B ---------- */
+{const flow=(items)=>`<div class="flow">`+items.map((x,i)=>(i?'<span class="a">→</span>':'')+`<span class="b ${x[1]||''}">${x[0]}</span>`).join('')+`</div>`;
+ $('#pb_flow').innerHTML='<h3>Перший прохід (без змін) і захоплення</h3>'+flow([['трекер'],['буфер Z: 8 × 1100 × 32 біт','new'],['LLR'],['деінтерлівер'],['LDPC','chg'],['сховище кодових слів: жорсткі біти + надійність','new'],['байти в буфер пакета']])+
+ '<h3>Якщо хоч одне слово не зійшлося</h3>'+flow([['ремодуляція надійних слів','new'],['S = Σ conj(x̂) z, E = Σ |x̂|² на піднесучу','new'],['G = (W₀·T + 4S) / (T·(W₀ + E))','new'],['вага корекції 1 / c','new'],['еквалайзер корекції','new'],['LLR → деінтерлівер → LDPC лише для слів з помилкою'],['дескремблінг і запис поверх','new'],['commit']])+
+ '<div class="key"><span><i style="background:color-mix(in srgb,var(--accent) 25%,var(--surface));border-color:var(--accent)"></i>новий блок phy_ca_refine</span><span><i style="background:color-mix(in srgb,var(--warn) 25%,var(--surface));border-color:var(--warn)"></i>змінений (декодер видає всі стовпці)</span></div>';
+ const [m,c]=['max_rate','mp3'];const cs=MODES.flatMap(mm=>[['awgn','var(--s2)'],['mp3','var(--s3)']].filter(([cc])=>ST.curves[mm][cc]).map(([cc,col])=>({name:MS[mm]+' · '+(CHS[cc]),color:mm==='max_rate'?col:(cc==='awgn'?'var(--s1)':'var(--s4)'),pts:C(mm,cc,'patch_b').map(p=>({x:p.x,y:p.pass2_share}))})));
+ xyChart($('#ch_p2'),{title:'Частка пакетів, для яких запускався другий прохід',xlabel:'SNR на відлік, дБ',xstep:2,series:cs,vfmt:v=>pct(v)});
+ const rows=[];MODES.forEach(mm=>{const l=lat(mm,'patch_b'),b=lat(mm,'baseline');const rs=RTL?RTL.runs.filter(r=>r.mode===mm&&r.config==='patch_b'):[];
+   const p2=rs.reduce((a,r)=>a+r.rtl_pass2_packets,0),fx=rs.reduce((a,r)=>a+r.rtl_fixed_cw,0),fl=rs.reduce((a,r)=>a+r.rtl_failed_cw,0);
+   rows.push([MS[mm]+': затримка без другого проходу',us(b&&b.first)]);rows.push([MS[mm]+': тривалість другого проходу, медіана / макс.',l?us(l.p2med)+' / '+us(l.p2max):'–']);
+   rows.push([MS[mm]+': пакетів з другим проходом у RTL-прогонах',String(p2)]);rows.push([MS[mm]+': кодових слів виправлено / лишилось з помилкою',fx+' / '+fl]);});
+ $('#pb_tbl').innerHTML=tbl(['RTL, пакети по '+(RTL?RTL.nsyms:'–')+' символи',''],rows);
+ $('#pb_cond').innerHTML=['Другий прохід запускається лише коли перший прохід залишив хоч одне кодове слово, що не зійшлося. Пакети без помилок ідуть як у Baseline, з тією самою затримкою.',
+  'Повторно декодуються тільки слова з помилкою. Слова, що зійшлися, зберігають результат першого проходу і слугують опорними символами разом із надійними бітами (|L| ≥ 24) решти слів.',
+  'Поки триває другий прохід, приймач зайнятий: детектор зводиться після commit. Якщо наступний пакет починається раніше, він буде втрачений. У RTL-прогонах з пакетами по 4 символи другий прохід тривав до 0.58 мс; для 8 символів у найгіршому разі (усі слова з помилкою, по 10 ітерацій) це за оцінкою близько 1.1 мс. При щільному потоці без пауз вмикати Patch B немає сенсу; він корисний там, де між пакетами є пауза або пакет дорожчий за пропуск наступного.',
+  'Вмикається бітом 4 регістра 0x1C за наявності апаратної частини (параметр <code>CA = 1</code>). У заголовку пакета біти [31:26] слова 4 показують, чи був другий прохід і скільки слів він виправив.',
+  'Виграш найбільший у крутій частині кривої PER і росте з довжиною пакета: що більше слів зійшлося в першому проході, то більше опорних символів.'].map(x=>`<li>${x}</li>`).join('');}
+
+/* ---------- 7 diagnostics ---------- */
+{if(DG){const e=DG.estimator.filter(r=>r.mode==='max_rate'&&r.channel==='awgn');const V=[['base','LTS + 3 біни (зараз)','var(--s1)'],['iter_rel','code-aided (Patch B)','var(--s3)'],['wiener','оцінка в області затримок','var(--s2)'],['genie','ідеальне знання каналу','var(--s4)']];
+  xyChart($('#ch_est'),{title:'Частка помилкових кодових слів, MAX RATE, AWGN',note:'float-модель ланки',log:true,ymin:1e-3,xlabel:'SNR на піднесучу, дБ (= на відлік + 2.3)',xstep:1,series:V.map(([k,n,col])=>({name:n,color:col,pts:e.map(r=>({x:r.snr_db,y:r[k]}))})),hlines:[{y:.1,label:'10 %'}]});
+  const cw=(mode,ch,k)=>{const p=DG.estimator.filter(r=>r.mode===mode&&r.channel===ch).map(r=>({x:r.snr_db,per:r[k],packets:r.codewords,ci:[r[k],r[k]]}));return cross(p,.1)};
+  const g=(mode,ch,k)=>{const a=cw(mode,ch,'base'),b=cw(mode,ch,k);return a!=null&&b!=null?a-b:null};
+  const names={'3 paths only':'лише 3 промені','+ CFO 4 kHz':'+ CFO 4 кГц','+ CFO 12 kHz':'+ CFO 12 кГц','+ SFO 15 ppm':'+ SFO 15 ppm','+ timing offset 3.4 samples':'+ зсув вікна 3.4 відліку','+ phase noise 50 Hz':'+ фазовий шум, ширина лінії 50 Гц','+ phase noise 500 Hz':'+ фазовий шум, ширина лінії 500 Гц','all (CFO 4 kHz, SFO, timing, phase noise 50 Hz)':'усе разом (CFO 4 кГц, SFO, зсув, шум 50 Гц)'};
+  const cases=[...new Set(DG.impairments.map(r=>r.case))];const cols=[['max_rate',16],['max_rate',20],['max_range',4],['max_range',8]];
+  const cell=(cs,m,s)=>{const r=DG.impairments.find(x=>x.case===cs&&x.mode===m&&x.snr_db===s);return r?[pct(r.per),r.evm_pct.toFixed(1)+' %']:['–','–']};
+  $('#imp_tbl').innerHTML=tbl(['Дефект поверх каналу з 3 променів',...cols.flatMap(([m,s])=>[`${MS[m]} ${s} дБ: PER`,'EVM']),'макс. похибка CFO, Гц'],cases.map(cs=>[names[cs]||cs,...cols.flatMap(([m,s])=>cell(cs,m,s)),num(Math.max(...DG.impairments.filter(x=>x.case===cs).map(x=>x.cfo_error_abs_max_hz||0)))]));
+  const gw=['max_rate','max_range'].map(m=>g(m,'awgn','wiener')),gg=['max_rate','max_range'].map(m=>g(m,'awgn','genie')),gi=['max_rate','max_range'].map(m=>g(m,'awgn','iter_rel'));
+  const dl=[];
+  dl.push(`<b>Оцінка каналу це головний резерв.</b> Між теперішньою оцінкою (LTS, згладжування 3 біни) та ідеальним знанням каналу лежить ${f1(gg[0])} дБ у MAX RATE і ${f1(gg[1])} дБ у MAX RANGE (float-модель, AWGN, поріг 10 % помилкових слів). Оцінка, обмежена областю затримок −16 … 160 відліків (розріджена модель каналу), забирає з них ${f1(gw[0])} і ${f1(gw[1])} дБ; code-aided прохід у тій самій моделі дає ${f2(gi[0])} і ${f2(gi[1])} дБ. Вона працює на кожному пакеті без другого проходу й затримки.`);
+  dl.push('<b>ICI від CFO, SFO і зсуву вікна не обмежує приймач.</b> CFO 4 і 12 кГц, SFO 15 ppm і зсув вікна 3.4 відліку не дали жодного помилкового пакета з 300 у жодному режимі: залишковий CFO після грубої оцінки не перевищує ≈ 100 Гц у MAX RATE і ≈ 350 Гц у MAX RANGE на 4 дБ, тобто ICI не гірша за −27 дБ, що набагато нижче за шум у цих точках. Придушення ICI для цих дефектів нічого не дасть.');
+  dl.push('<b>Єдиний дефект, що дає втрати, це фазовий шум.</b> З вільним генератором із шириною лінії 50 Гц оцінка CFO помиляється до 1.3 кГц і MAX RATE має залишкові помилки (PER близько 1 % на 20 дБ). Це модель вільного генератора; синтезатор AD9361 із петлею ФАПЧ має значно менший шум. Чи потрібна боротьба з ICI, слід вирішувати після RF-вимірювань фазового шуму; перший дешевий крок тут це уточнення CFO за LTS і заголовком, а не компенсатор ICI.');
+  if(DT){const a=DT.curves.awgn;const k=['det R/2 (RTL), baseline','det R/2 (RTL), Patch B','det R/4 (model), baseline','det R/4 (model), Patch B'];const t=k.map(c=>cross(a[c],.01));
+   dl.push(`<b>MAX RANGE у AWGN впирається в детектор пакета.</b> Детектор Шмідля-Кокса спрацьовує за умови |P| > R / 2, тобто лише коли SNR вище 0 дБ. Поблизу 1 дБ частина пакетів просто не виявляється, і жоден патч декодера цього не виправить. У моделі з порогом R / 4 (у RTL не реалізовано) SNR при PER = 1 % змінюється так: Baseline ${f2(t[0])} → ${f2(t[2])} дБ, а разом з Patch B ${f2(t[1])} → ${f2(t[3])} дБ. Тобто сам поріг дає мало, але він відкриває виграш Patch B, який зараз у MAX RANGE AWGN не видно.`);}
+  dl.push('<b>Рекомендація.</b> Наступним робити оцінку каналу в області затримок (розріджену): найбільший виміряний резерв в обох режимах. Для MAX RANGE перед цим знизити поріг детектора, інакше виграш декодера не дійде до PER. Компенсатор ICI відкласти до RF-вимірювань.');
+  $('#diag_list').innerHTML=dl.map(x=>`<li>${x}</li>`).join('');}
+ if(DT){const a=DT.curves.awgn;const cols=['var(--s1)','var(--s3)','var(--s2)','var(--s4)'];
+  xyChart($('#ch_det'),{title:'MAX RANGE, AWGN: поріг детектора',note:'модель, PER з урахуванням невиявлених',log:true,ymin:1e-3,xlabel:'SNR на відлік, дБ',xstep:.5,series:['det R/2 (RTL), baseline','det R/2 (RTL), Patch B','det R/4 (model), baseline','det R/4 (model), Patch B'].map((c,i)=>({name:c.replace('det ','детектор ').replace('(RTL)','(як у RTL)').replace('(model)','(лише модель)'),color:cols[i],dash:i%2===1,pts:a[c].map(p=>({x:p.x,y:p.per,lo:p.ci[0],hi:p.ci[1]}))})),hlines:[{y:.01,label:'1 %'}]});}}
+
+/* ---------- 8 RTL verification ---------- */
+{if(RTL){const sc=[...new Set(RTL.runs.map(r=>r.scenario))];const SN={range_awgn:'MAX RANGE, AWGN',range_mp3:'MAX RANGE, 3 промені',range_impaired:'MAX RANGE, з дефектами',rate_awgn:'MAX RATE, AWGN',rate_mp3:'MAX RATE, 3 промені',rate_impaired:'MAX RATE, з дефектами'};
+  const rows=RTL.runs.map(r=>[r.config==='baseline'?`${SN[r.scenario]||r.scenario}, ${r.snr_db} дБ`:'',CN[r.config],r.packets_rtl+' / '+r.packets_tx,r.replay_exact+' / '+r.packets_rtl,String(r.rtl_pass2_packets),r.rtl_fixed_cw+' / '+r.rtl_failed_cw,r.ok_python+' / '+r.ok_rtl]);
+  $('#rtl_tbl').innerHTML=tbl(['Сценарій (точка всередині «водоспаду»)','Конфігурація','виявлено RTL / передано','бекенд RTL = модель','пакетів з 2-м проходом','слів виправлено / лишилось','пакетів без помилок: Python / RTL'],rows);
+  const ex=RTL.runs.reduce((a,r)=>a+r.replay_exact,0),pk=RTL.runs.reduce((a,r)=>a+r.packets_rtl,0),op=RTL.runs.reduce((a,r)=>a+r.ok_python,0),or=RTL.runs.reduce((a,r)=>a+r.ok_rtl,0);
+  $('#rtl_sub').innerHTML=`Ті самі відліки (дані, канал, шум) подано на Python-приймач і на <code>phy_rx_top</code> в xsim, по ${RTL.packets} пакетів із ${RTL.nsyms} символів у точках, де частина кодових слів не сходиться. Перевірка 1: вихід трекера і параметри демапера, записані з RTL, проганяються через fixed-моделі бекенду; байти, кількість невдалих слів, ітерації та результат другого проходу мають збігтися точно. Збіглося ${ex} з ${pk} пакетів. Перевірка 2: кількість пакетів без помилок у Python і RTL, разом ${op} проти ${or}.`;}
+ const fin=RG.final.length?RG.final:RG.baseline;const ok=fin.filter(t=>t.pass).length;const groups={};fin.forEach(t=>{(groups[t.name]=groups[t.name]||[]).push(t)});
+ $('#reg_tbl').innerHTML=`<h3>Регресія тестбенчів: ${ok} з ${fin.length} проходять</h3><p class="note" style="margin:4px 0 8px">${RG.final.length?'після обох патчів і виправлення':'Baseline (оптимізований PHY)'}; до патчів: ${RG.baseline.filter(t=>t.pass).length} з ${RG.baseline.length}</p>`+tbl(['Тестбенч','прогонів','результат'],Object.entries(groups).map(([n,l])=>[n,String(l.length),pill(l.every(t=>t.pass),'pass','fail')]),'t');
+ $('#bug_list').innerHTML=['<b>Дефект RTL у Baseline, знайдений порівнянням з Python.</b> Лінія затримки вікна стояла після NCO-змішувача. Детектор оголошує пакет через ≈ 520 … 570 відліків після піка, тож перші ≈ 480 відліків вікна LTS уже були змішані зі старим інкрементом і фазою попереднього пакета. Оцінка каналу псувалась у кожному пакеті, крім першого після скидання: виміряний SNR падав на 0.4 … 0.9 дБ, кодових слів з помилкою було у 2 … 4 рази більше, ніж у моделі. Системні тестбенчі цього не бачили, бо працюють на високому SNR. Виправлено: затримка тепер перед змішувачем, <code>WIN_DELAY</code> = 704. Після цього виміряний SNR і кількість невдалих слів у RTL та моделі збігаються пакет у пакет.',
+  '<b>Фронтенд Python і RTL не бітово ідентичні на рівні потоку.</b> Початкова фаза NCO і стан петлі точного таймінгу відрізняються за побудовою; на високому SNR рішення однакові, всередині «водоспаду» окремі пакети можуть декодуватись по-різному. Тому бітова перевірка патчів робиться на виході трекера RTL (перевірка 1), а не на рівні потоку.',
+  '<b>Модель декодера.</b> Апостеріорні значення слова, що зійшлося, тепер фіксуються в момент збіжності, як у RTL (раніше модель продовжувала ітерації). На результат не впливає: для таких слів усі біти вважаються надійними.',
+  '<b>Таймінг патчів, знайдено синтезом.</b> Перший варіант Patch A не вкладався у 8 нс (−1.66 нс: три суматори перед входом множника), у Patch B було два довгі шляхи (пам'ять Z → добутки → суматор, −1.14 нс; пам'ять декодера → поріг надійності → ротатор). Додано по одному регістру конвеєра в кожному з трьох місць; після цього синтез усіх конфігурацій без порушень. 204 пакети RTL-порівняння зроблено до цих трьох регістрів; після них бітову відповідність підтверджено блочними тестбенчами і перевіркою <code>rxenh_rtl_check</code> (8 пакетів, обидва режими, другий прохід спрацьовує).',
+  'Тестів, що не проходять, на момент звіту немає.'].map(x=>`<li>${x}</li>`).join('');}
+
+/* ---------- 9 resources ---------- */
+{const have=CF.filter(k=>IM[k]);
+ const rows=[];
+ const add=(n,f)=>rows.push([n,...CF.map(k=>IM[k]?f(k):'–')]);
+ add('LUT, увесь проєкт (з 53 200)',k=>num(tot(k).lut)+' ('+(tot(k).lut/53200*100).toFixed(1)+' %)');
+ add('FF, увесь проєкт (з 106 400)',k=>num(tot(k).ff)+' ('+(tot(k).ff/106400*100).toFixed(1)+' %)');
+ add('BRAM, плитки (з 140)',k=>tot(k).bram+' ('+(tot(k).bram/140*100).toFixed(1)+' %)');
+ add('DSP (з 220)',k=>tot(k).dsp+' ('+(tot(k).dsp/220*100).toFixed(1)+' %)');
+ add('LUT / FF лише PHY',k=>num(phy(k).lut)+' / '+num(phy(k).ff));
+ add('BRAM / DSP лише PHY',k=>bram(phy(k))+' / '+phy(k).dsp);
+ add('WNS (setup), нс',k=>tim(k).wns!=null?(tim(k).wns>=0?'+':'')+tim(k).wns.toFixed(3):'–');
+ add('TNS, нс',k=>tim(k).tns!=null?tim(k).tns.toFixed(3):'–');
+ add('WHS (hold), нс',k=>tim(k).whs!=null?'+'+tim(k).whs.toFixed(3):'–');
+ rows.push(['Після синтезу, PHY окремо: LUT',...CF.map(k=>SY[k]?num(SY[k].util.lut):'–')]);
+ rows.push(['Після синтезу: FF',...CF.map(k=>SY[k]?num(SY[k].util.ff):'–')]);
+ rows.push(['Після синтезу: BRAM / DSP',...CF.map(k=>SY[k]?SY[k].util.bram+' / '+SY[k].util.dsp:'–')]);
+ rows.push(['Після синтезу: WNS (оцінка без розведення), нс',...CF.map(k=>SY[k]&&SY[k].timing.wns!=null?(SY[k].timing.wns>=0?'+':'')+SY[k].timing.wns.toFixed(2):'–')]);
+ $('#res_tbl').innerHTML=tbl(['xc7z020clg400-1',...CF.map(k=>CN[k])],rows);
+ const hn={u_ldpc:'LDPC декодер',u_chest:'оцінювач каналу',u_fft:'FFT',u_sync:'детектор',u_trk:'трекер',u_post:'MMSE движок',u_dm:'LLR демапер',u_ca:'phy_ca_refine (Patch B)',u_wc:'  у т.ч. ядро ваг',u_eq2:'  у т.ч. еквалайзер корекції',u_deint:'деінтерлівер',u_eq:'еквалайзер',u_pkt:'буфер пакета'};
+ const hr=Object.keys(hn).map(i=>[hn[i],...CF.flatMap(k=>{const r=hrow(k,i);return r?[num(r.lut),num(r.ff),String(r.bram36+r.bram18/2),String(r.dsp)]:['–','–','–','–']})]).filter(r=>r.slice(1).some(c=>c!=='–'));
+ $('#res_hier').innerHTML='<h3 style="margin-bottom:8px">Блоки PHY після синтезу: LUT, FF, BRAM, DSP</h3>'+tbl(['Блок',...CF.flatMap(k=>[CN[k]+' LUT','FF','BRAM','DSP'])],hr);
+ const a=IM.patch_a&&IM.baseline?phy('patch_a').lut-phy('baseline').lut:null,b=IM.patch_b&&IM.patch_a?phy('patch_b').lut-phy('patch_a').lut:null;
+ $('#res_sub').innerHTML='Синтез <code>phy_rx_top</code> окремо (out-of-context) зроблено для всіх трьох конфігурацій тим самим RTL. Повна імплементація проєкту <code>nano_sdr_pluto_ofdm_rx</code> (PS7, axi_ad9361, DMA, PHY RX) є лише для Baseline і зроблена до виправлення змішувача та додаткового ступеня демапера (обидва майже не змінюють ресурси). Імплементацію патчів відкладено за рішенням замовника; скрипт <code>build_rxenh.sh</code> готовий. Обмеження тактового сигналу 8 нс, робоча частота 61.44 МГц. WNS після синтезу це оцінка без затримок розведення: після імплементації slack зазвичай менший. '+(SY.patch_a&&SY.baseline?`За синтезом Patch A додає ${num(SY.patch_a.util.lut-SY.baseline.util.lut)} LUT, а Patch B ще ${num(SY.patch_b.util.lut-SY.patch_a.util.lut)} LUT, ${num(SY.patch_b.util.ff-SY.patch_a.util.ff)} FF, ${SY.patch_b.util.bram-SY.patch_a.util.bram} плиток BRAM і ${SY.patch_b.util.dsp-SY.patch_a.util.dsp} DSP. `:'')+(a!=null?`Patch A додає ${a>=0?'+':''}${num(a)} LUT до PHY (різниця на рівні розкиду розміщення). `:'')+(b!=null?`Patch B додає ${num(b)} LUT, ${num(phy('patch_b').ff-phy('patch_a').ff)} FF, ${bram(phy('patch_b'))-bram(phy('patch_a'))} плиток BRAM і ${phy('patch_b').dsp-phy('patch_a').dsp} DSP.`:'');}
+
+/* ---------- 10 criteria ---------- */
+{const allOk=(RG.final.length?RG.final:RG.baseline).every(t=>t.pass);const tm=CF.every(k=>tim(k)&&tim(k).wns>=0&&tim(k).whs>=0);
+ const gB=MODES.flatMap(m=>Object.keys(ST.curves[m]).map(c=>gain(m,c,'patch_b'))).filter(v=>v!=null);const ex=RTL?RTL.runs.every(r=>r.replay_exact===r.packets_rtl):false;
+ const rows=[
+  ['MAX RANGE: QPSK + LDPC 1/2, близько 15.4 Мбіт/с',`${RATE('max_range').toFixed(1)} Мбіт/с корисних (135 байт на символ; 15.4 це кодова швидкість без 20 заповнювальних піднесучих)`,true],
+  ['MAX RATE: 16-QAM + LDPC 5/6, близько 51.3 Мбіт/с',`${RATE('max_rate').toFixed(1)} Мбіт/с корисних (450 байт на символ)`,true],
+  ['Обидва режими на спільному datapath','Один phy_rx_top, режим із заголовка пакета; обидва патчі працюють в обох режимах на тих самих блоках',true],
+  ['Повний RX PHY вміщується в Zynq-7020 із запасом',(IM.baseline?`Baseline після імплементації: ${(tot('baseline').lut/53200*100).toFixed(0)} % LUT, ${(tot('baseline').bram/140*100).toFixed(0)} % BRAM, ${(tot('baseline').dsp/220*100).toFixed(0)} % DSP усього проєкту. `:'')+(SY.patch_b&&SY.baseline&&IM.baseline?`З Patch B за синтезом це близько ${((tot('baseline').lut+SY.patch_b.util.lut-SY.baseline.util.lut)/53200*100).toFixed(0)} % LUT, ${((tot('baseline').bram+SY.patch_b.util.bram-SY.baseline.util.bram)/140*100).toFixed(0)} % BRAM, ${((tot('baseline').dsp+SY.patch_b.util.dsp-SY.baseline.util.dsp)/220*100).toFixed(0)} % DSP (оцінка)`:''),IM.patch_b?true:null],
+  ['Проходить timing analysis','Baseline після імплементації: '+(tim('baseline')&&tim('baseline').wns!=null?'+'+tim('baseline').wns.toFixed(3)+' нс. ':'– ')+'Після синтезу: '+CF.map(k=>CN[k]+' '+(SY[k]&&SY[k].timing.wns!=null?(SY[k].timing.wns>=0?'+':'')+SY[k].timing.wns.toFixed(2)+' нс':'–')).join(', ')+'. Імплементація патчів відкладена',CF.every(k=>tim(k))?tm:null],
+  ['Оптимізація не ламає Baseline',`Регресія після оптимізації: ${RG.baseline.filter(t=>t.pass).length} з ${RG.baseline.length} бітово-точно`,RG.baseline.every(t=>t.pass)],
+  ['Нові алгоритми дають вимірний виграш або обґрунтовану стійкість',`Patch B: ${gB.length?sgn(Math.min(...gB))+' … '+sgn(Math.max(...gB)):'–'} дБ при PER = 1 %. Patch A: вимірного виграшу немає, показано чому`,gB.length&&Math.max(...gB)>0.1?null:false],
+  ['Python reference і RTL на однакових даних',RTL?`${RTL.runs.length} RTL-прогонів, бекенд збігається з моделлю ${ex?'в усіх пакетах':'не в усіх пакетах'}`:'–',ex],
+  ['Регресія після кожного патча, результати збережено',`${(RG.final.length?RG.final:RG.baseline).filter(t=>t.pass).length} з ${(RG.final.length?RG.final:RG.baseline).length}; журнали в results/rxenh`,allOk],
+  ['Без тверджень про чутливість реального радіо','Усі SNR це результат симуляції; RF-вимірювання не проводились',true]];
+ $('#crit').innerHTML='<table><thead><tr><th>Критерій ТЗ</th><th>Результат</th><th></th></tr></thead><tbody>'+rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${pill(r[2],r[2]===true?'виконано':'частково','ні')}</td></tr>`).join('')+'</tbody></table>';
+ $('#method').innerHTML=['Криві PER: <code>phy_sim/experiments/rxenh_study.py</code>, потім <code>--refine</code>; приймач python:fixed (бітово-точні моделі RTL), '+ST.nsyms+' символи даних у пакеті.',
+  'Діагностика: <code>rxenh_diag.py</code> (ізоляція дефектів, float-модель оцінки каналу), <code>rxenh_det.py</code> (поріг детектора, лише модель).',
+  'RTL: <code>rtl_runs_rxenh.py</code> (xsim, <code>tb_rtl_rx_file</code> з параметрами UA, CA), регресія <code>sim/run_regression.sh</code>.',
+  'Імплементація: <code>nano_sdr_pluto_ofdm_rx/build_rxenh.sh</code> (три конфігурації через змінні середовища), синтез окремо: <code>synth/synth_est.tcl</code>.',
+  'Моделі патчів: <code>python/rxenh_fixed_ref.py</code>; RTL: <code>rtl/rx/phy_llr_demap.sv</code> (Patch A), <code>rtl/rx/phy_ca_refine.sv</code>, <code>rtl/rx/phy_w_core.sv</code> (Patch B).',
+  'Звіт: <code>build_rxenh_report.py</code>.'].map(x=>`<li>${x}</li>`).join('');}
+</script>

@@ -44,7 +44,9 @@ class RtlSimRxBackend(RxBackend):
         ph = refs.phy_opts(self.cfg)
         gen = {"CODED": 1 if refs.phy_code(self.cfg) == "ldpc" else 0, "MMSE": 1 if ph.get("eq", "mmse") == "mmse" else 0, "HDR_EN": 1 if ph.get("hdr_en", True) else 0, "SMOOTH": 1 if int(ph.get("chest_smooth", 0)) > 0 else 0, "MODE_FB": 1 if ph.get("fallback_mode", 1) else 0, "MAX_ITER": int(ph.get("max_iter", 10)),
                "FT_EN": 1 if ph.get("fine_timing", True) else 0, "TAU_TGT": int(ph.get("tau_target", 56)), "NS": len(iq), "NSYMS": self.nsyms, "RMIN": int(rxc.get("rmin", 262144)), "GAIN_SH": int(rxc.get("gain_sh", 0)),
-               "CLKS_PER_SAMPLE": self.CLKS_PER_SAMPLE, "DEBUG": debug}
+               "CLKS_PER_SAMPLE": self.CLKS_PER_SAMPLE, "DEBUG": debug, "UA": 1 if ph.get("ua") else 0, "CA": 1 if ph.get("ca") else 0}
+        if ph.get("ca"):
+            gen["IDLE_LIMIT"] = 160000               # the second pass of the last packet runs after the stream ended
         sim = Simulator(self.cfg)
         out = sim.run("tb_rtl_rx_file", gen, {"rtl_rx_in.mem": mem})["rtl_rx_out.txt"]
         self._parse(out)
@@ -52,6 +54,7 @@ class RtlSimRxBackend(RxBackend):
     # ------------------------------------------------------------------
     def _parse(self, text: str) -> None:
         beats, events, incs, q_re, q_im, weights = [], [], [], [], [], {}
+        prm, p2_start, p2_done = {}, [], []
         meta, status = {}, {}
         for line in text.splitlines():
             t = line.split()
@@ -69,6 +72,12 @@ class RtlSimRxBackend(RxBackend):
                 q_re.append(int(t[1])); q_im.append(int(t[2]))
             elif t[0] == "W":
                 weights.setdefault(len(incs), {})[int(t[1])] = int(t[2], 16)
+            elif t[0] == "P":
+                prm.setdefault(len(incs), {})[int(t[1])] = int(t[2], 16)
+            elif t[0] == "X":
+                p2_start.append(int(t[1]))
+            elif t[0] == "Y":
+                p2_done.append((int(t[1]), int(t[2])))
             elif t[0] == "S":
                 status = {"det": int(t[1]), "pkt": int(t[2]), "drop": int(t[3]), "wd": int(t[4]), "flags": int(t[5]), "clks": int(t[6]),
                           "cw": int(t[7]) if len(t) > 7 else 0, "cw_fail": int(t[8]) if len(t) > 8 else 0}
@@ -91,7 +100,8 @@ class RtlSimRxBackend(RxBackend):
             e = {**ev, "cfo_inc": inc, "cfo_hz_est": -ang * refs.FS / 2 ** 32, "sync_start_est": ev["n_best"] - refs.SYNC_PEAK_OFFSET,
                  "status": "ok" if k < len(pkts) else "no_packet"}
             self.debug["events"].append(e)
-        perf = {"clks_per_sample": meta.get("cps", 2), "sim_clks": status.get("clks"), "rx_beats": len(beats),
+        self.debug["pass2_clks"] = [d[0] - s for s, d in zip(p2_start, p2_done)]
+        perf = {"pass2_clks": self.debug["pass2_clks"], "clks_per_sample": meta.get("cps", 2), "sim_clks": status.get("clks"), "rx_beats": len(beats),
                 "rx_drops": status.get("drop", 0)}
         for k, p in enumerate(pkts):
             h0 = p[0]
@@ -116,10 +126,13 @@ class RtlSimRxBackend(RxBackend):
                            "ldpc_failures": (b4 >> 56) & 0xFF, "ldpc_iterations": [((b4 >> 32) & 0xFFF) / ncw] * ncw, "ldpc_iter_max": (b4 >> 48) & 0x1F,
                            "ldpc_codewords": ncw, "tau_q8": sg(b4 & 0xFFFFF, 20), "angle_first": (b5 >> 32) & 0xFFFFFFFF,
                            "sfo_slope_last": sg(b5 & 0xFFFFFFFF, 32), "mode_used": mode_id, "hdr_ok": bool((hb >> 2) & 1),
-                           "hdr_nsyms_mismatch": bool((hb >> 3) & 1), "hdr": {"ok": bool((hb >> 2) & 1), "mode": mode_id}})
+                           "hdr_nsyms_mismatch": bool((hb >> 3) & 1), "hdr": {"ok": bool((hb >> 2) & 1), "mode": mode_id},
+                           "enh": {"pass2": bool((b4 >> 31) & 1), "ua": bool((b4 >> 30) & 1), "fixed_cw": (b4 >> 26) & 0xF}})
             sl = slice(k * qblock + (refs.P.NUM_DATA_SC if coded else 0), (k + 1) * qblock)
             if len(q_all) >= sl.stop:
                 pk["eq"] = q_all[sl].reshape(nsyms, refs.P.NUM_DATA_SC)
+            if k + 1 in prm and len(prm[k + 1]) == refs.P.NUM_DATA_SC:
+                pk["prm"] = [prm[k + 1][j] for j in range(refs.P.NUM_DATA_SC)]
             ang = (p[2] >> 32) & 0xFFFFFFFF
             pk["angles"] = np.array([ang], dtype=np.int64)
             if k + 1 in weights and len(weights[k + 1]) == refs.P.NUM_ACTIVE_SC:
@@ -140,5 +153,6 @@ class RtlSimRxBackend(RxBackend):
                 end_idx = events[k]["n_best"] + refs.LTS_WINDOW_OFFSET + (nsyms + (1 if coded else 0)) * refs.SYM_LEN + refs.N_FFT
                 last_clk = meta["t0"] + end_idx * meta["cps"]
                 perf.setdefault("rx_first_beat_clk", first_clk[k]); perf.setdefault("rx_last_sample_clk", last_clk)
+                perf.setdefault("rx_latency_clks_all", []).append(int(first_clk[k] - last_clk))
         self.debug["perf"] = perf
         self.debug["status"] = status

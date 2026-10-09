@@ -81,7 +81,7 @@ class PythonRxBackend(RxBackend):
         k = int(rxc.get("dc_k", 16))
         di = np.array(rb.dc_remove(i, k), dtype=np.int64)
         dq = np.array(rb.dc_remove(q, k), dtype=np.int64)
-        events = sr.detect_events(di, dq, hold=int(rxc.get("hold", 9000)), rmin=int(rxc.get("rmin", 262144)))
+        events = sr.detect_events(di, dq, hold=int(rxc.get("hold", 9000)), rmin=int(rxc.get("rmin", 262144)), thr_sh=int(rxc.get("det_shift", 1)))
         self.debug["events"] = []
         self.debug["packets"] = []
         new = R.phy_code(self.cfg) == "ldpc"
@@ -139,7 +139,12 @@ class PythonRxBackend(RxBackend):
                                       ph.get("llr", "weighted") == "hard", not forced, int(ph.get("chest_smooth", 0)))
         mode_used = diag["mode"]
         nbytes = self.nsyms * R.phy2_ref.info_bytes_per_sym(mode_used)
-        data, its, done = F.decode_llr(llr, self.nsyms, nbytes, int(ph.get("max_iter", 10)), mode_used)
+        if ph.get("ua") or ph.get("ca"):
+            data, its, done, enh = R.rxenh_fixed_ref.receive_decode(llr, diag, self.nsyms, mode_used, nbytes, int(ph.get("max_iter", 10)),
+                                                                    bool(ph.get("ua")), bool(ph.get("ca")))
+        else:
+            data, its, done = F.decode_llr(llr, self.nsyms, nbytes, int(ph.get("max_iter", 10)), mode_used)
+            enh = {}
         T = np.maximum(np.asarray(diag["T"], float), 1.0)
         eq = np.array([(np.asarray(xr, float) + 1j * np.asarray(xi, float)) * 8192.0 / T for xr, xi in diag["eq"]])
         yr, yi = rf.select_active(*yl)
@@ -154,7 +159,7 @@ class PythonRxBackend(RxBackend):
                 "ldpc_codewords": int(len(its)), "snr_avg_db": avg * 3.0103 / F.LGF, "snr_min_db": mn * 3.0103 / F.LGF,
                 "bad_subcarriers": bad, "snr_k_db": snr_k, "noise_code": int(diag["lgnu"]), "tau_q8": int(tau_q8),
                 "sfo_slopes": [int(v) for v in diag["slopes"]], "angles_raw": [int(v) for v in diag["angles"]],
-                "hdr": diag["hdr"], "mode_used": mode_used}
+                "hdr": diag["hdr"], "mode_used": mode_used, "enh": enh}
 
     def _fixed_packet(self, wins, rf) -> dict:
         yr, yi_ = rf.select_active(*rf.rx_fft(*wins[0]))

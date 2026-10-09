@@ -12,16 +12,21 @@
 //     check-node state of the 6 layers circulates in a shift ring;
 //   * early termination after one full clean iteration (6 / 18 consecutive clean layers) (no unsatisfied parity among the read signs and no sign changed on write).
 // Cost: ~(2*deg + 8) cycles per layer, ~260 cycles per iteration.
+// cfg_post = 1 (code-aided receiver, phy_ca_refine): every codeword is also delivered as 36 columns of hard decisions (col_hard[i] = bit
+//   60 * col_idx + i) with a reliability flag per bit (codeword converged, or |posterior| >= REL_THR); the parity columns are read after the
+//   last byte, which delays the release of the bank by 3 cycles per column pair. cfg_post = 0: no change of behaviour or timing.
 module phy_ldpc_dec
   import phy_ldpc_pkg::*;
 #(
   parameter int LW = 8,            // posterior / message width
-  parameter int MW = 7             // check magnitude width (min1 / min2)
+  parameter int MW = 7,            // check magnitude width (min1 / min2)
+  parameter int REL_THR = 24       // |posterior| from which a bit of a non-converged codeword counts as reliable (cfg_post)
 ) (
   input  logic              clk,
   input  logic              rst,
   input  logic [4:0]        cfg_max_iter,
   input  logic              cfg_cs,            // code select, static while a packet is in flight
+  input  logic              cfg_post,          // deliver all columns with reliability flags (static while a packet is in flight)
   input  logic              in_valid,
   output logic              in_ready,
   input  logic signed [5:0] in_llr [4],
@@ -32,7 +37,11 @@ module phy_ldpc_dec
   output logic              st_valid,          // with out_last
   output logic              st_ok,
   output logic [4:0]        st_iter,
-  output logic              busy
+  output logic              busy,
+  output logic              col_valid,         // cfg_post: column col_idx of the codeword being output
+  output logic [5:0]        col_idx,
+  output logic [LZ-1:0]     col_hard,
+  output logic [LZ-1:0]     col_rel
 );
   localparam int Z    = LZ;
   localparam int LMAX = (1 << (LW - 1)) - 1;     // 127
@@ -102,30 +111,47 @@ module phy_ldpc_dec
     end
   end
 
-  // ===================================================================== posterior memories (distributed RAM), 2 banks x 60 elements
+  // ===================================================================== posterior memories: 2 banks, one block RAM of 36 x (60 x 8 bit) each
+  // with a write enable per element (byte): the loader writes 4 elements of a column per cycle, the decoder a whole column. Synchronous read:
+  // the RAM output register replaces the former s1_d / raw_q registers (same latency as the registered asynchronous read it replaces).
+  // The loader and the decoder never write the same bank at the same time; a column is never read in the cycle it is written.
   genvar gb, gp;
+  logic [Z*LW-1:0] rd_q [2];
   generate
     for (gb = 0; gb < 2; gb++) begin : g_bank
+      logic [Z-1:0]    l_we;
+      logic [Z*LW-1:0] l_d;
+      logic [5:0]      l_col;
       for (gp = 0; gp < Z; gp++) begin : g_el
-        logic signed [LW-1:0] mem [LNB];
-        logic              l_we_c, l_we;
-        logic signed [5:0] l_d_c, l_d;
-        logic [5:0]        l_col;
+        logic              l_we_c;
+        logic signed [5:0] l_d_c;
         always_comb begin
           l_we_c = 1'b0; l_d_c = '0;
           for (int j = 0; j < 4; j++)
             if (lq_v && lq_sel == 1'(gb) && lq_p[j] == 6'(gp)) begin l_we_c = 1'b1; l_d_c = lq_d[j]; end
         end
-        always_ff @(posedge clk) begin           // element-local write registers (timing: no fan-out of the loader signals into the RAMs)
-          l_we <= l_we_c; l_d <= l_d_c; l_col <= lq_col;
+        always_ff @(posedge clk) begin           // write registers in front of the RAM (timing)
+          l_we[gp] <= l_we_c; l_d[gp*LW +: LW] <= LW'(l_d_c);
         end
-        wire d_we = dw_en && (dec_sel == 1'(gb));
-        always_ff @(posedge clk) begin
-          if (l_we)      mem[l_col] <= LW'(l_d);
-          else if (d_we) mem[dw_col] <= dw_data[gp];
-        end
-        assign rd_data[gb][gp] = mem[rd_addr[gb]];
+        assign rd_data[gb][gp] = rd_q[gb][gp*LW +: LW];
       end
+      always_ff @(posedge clk) l_col <= lq_col;
+      wire             d_we  = dw_en && (dec_sel == 1'(gb));
+      wire             l_any = |l_we;
+      wire [5:0]       wa    = l_any ? l_col : dw_col;
+      logic [Z*LW-1:0] wd;
+      logic [Z-1:0]    we;
+      always_comb begin
+        for (int p = 0; p < Z; p++) begin
+          we[p] = l_any ? l_we[p] : d_we;
+          wd[p*LW +: LW] = l_any ? l_d[p*LW +: LW] : dw_data[p];
+        end
+      end
+      (* ram_style = "block" *) logic [Z*LW-1:0] pmem [64];
+      always_ff @(posedge clk) begin
+        for (int p = 0; p < Z; p++) if (we[p]) pmem[wa][p*LW +: LW] <= wd[p*LW +: LW];
+      end
+      always_ff @(posedge clk) rd_q[gb] <= pmem[rd_addr[gb]];
     end
   endgenerate
 
@@ -134,12 +160,14 @@ module phy_ldpc_dec
   logic [4:0]       w_idx [Z];
   logic             w_par [Z];
   logic [LDMAX-1:0] w_sg [Z];
-  logic [MW-1:0]    rg_m1 [LMB][Z], rg_m2 [LMB][Z]; // ring: record of the layer processed next is at index 0
-  logic [4:0]       rg_idx [LMB][Z];
-  logic             rg_par [LMB][Z];
-  logic [LDMAX-1:0] rg_sg [LMB][Z];
+  // layer ring: the check-node record written at the end of a layer is read again lmb layers later (dynamic shift register, tap = lmb - 1)
+  localparam int RGW = 2 * MW + 5 + 1 + LDMAX;
+  logic [RGW-1:0]   rg_d [Z], rg_q [Z];
+  logic             rg_en;
   logic             pr_acc [Z];
-  lv_t              qbuf [LDMAX];
+  // Q messages of the layer in progress (pass 1 writes, pass 2 reads): 18 x 480 bit, block RAM (was 8.6 k flip-flops + an 18:1 read mux)
+  (* ram_style = "block" *) logic [Z*LW-1:0] qbuf [32];
+  logic [Z*LW-1:0]  qbuf_q;
   logic [Z-1:0]     lsg [LDMAX];
 
   typedef enum logic [2:0] {D_IDLE, D_P1, D_P1D, D_P2, D_P2D, D_END} dst_t;
@@ -175,8 +203,7 @@ module phy_ldpc_dec
   assign rd_addr[0] = (dec_busy && !dec_sel) ? s0_col : out_col_r;
   assign rd_addr[1] = (dec_busy &&  dec_sel) ? s0_col : out_col_r;
 
-  lv_t rdsel;
-  always_comb for (int p = 0; p < Z; p++) rdsel[p] = dec_sel ? rd_data[1][p] : rd_data[0][p];
+  always_comb for (int p = 0; p < Z; p++) s1_d[p] = dec_sel ? rd_data[1][p] : rd_data[0][p];     // RAM output register = stage s1
 
   lv_t rotA, rotB, rold;
   always_comb begin
@@ -190,22 +217,25 @@ module phy_ldpc_dec
     rotB = rot_stage(rotB, 32, s2_dl[5]);
     for (int r = 0; r < Z; r++) begin
       logic [MW-1:0] mg, sc, m1x, m2x; logic [4:0] ix; logic px; logic [LDMAX-1:0] sx;
-      // the record of the layer processed next sits at ring index LMB - lmb (0 for the 18-layer code, LMB - 6 for the 6-layer code):
-      // a new record enters at LMB-1 and moves down one index per layer, a 2:1 read mux instead of a write mux in front of every ring flip-flop
-      if (cfg_cs) begin m1x = rg_m1[LMB-6][r]; m2x = rg_m2[LMB-6][r]; ix = rg_idx[LMB-6][r]; px = rg_par[LMB-6][r]; sx = rg_sg[LMB-6][r]; end
-      else        begin m1x = rg_m1[0][r];     m2x = rg_m2[0][r];     ix = rg_idx[0][r];     px = rg_par[0][r];     sx = rg_sg[0][r];     end
+      // record of this layer from the previous iteration: tap lmb - 1 of the ring
+      m1x = rg_q[r][MW-1:0]; m2x = rg_q[r][2*MW-1:MW]; ix = rg_q[r][2*MW+4:2*MW]; px = rg_q[r][2*MW+5]; sx = rg_q[r][RGW-1:2*MW+6];
       mg = (ix == s2_k) ? m2x : m1x;
       sc = mg - (mg >> 2);
       if (first_iter) rold[r] = '0;
       else rold[r] = (px ^ sx[s2_k]) ? -LW'($signed({1'b0, sc})) : LW'($signed({1'b0, sc}));
     end
   end
+  for (genvar gr = 0; gr < Z; gr++) begin : g_ring
+    assign rg_d[gr] = {w_sg[gr], w_par[gr], w_idx[gr], w_m2[gr], w_m1[gr]};
+    phy_dyn_sr #(.W(RGW), .DEPTH(LMB)) u_rg (.clk, .en(rg_en), .d(rg_d[gr]), .tap(5'(lmb_c - 5'd1)), .q(rg_q[gr]));
+  end
+  assign rg_en = (dst == D_END);
 
   always_ff @(posedge clk) begin
     s0_v <= issue1; s0_k <= e_cnt;
     s0_col <= lcol(int'(cfg_cs), int'(layer), int'(e_cnt));
     s0_dl  <= ldelta(int'(cfg_cs), int'(layer), int'(e_cnt));
-    s1_v <= s0_v; s1_k <= s0_k; s1_dl <= s0_dl; s1_d <= rdsel;
+    s1_v <= s0_v; s1_k <= s0_k; s1_dl <= s0_dl;
     s2_v <= s1_v; s2_k <= s1_k; s2_dl <= s1_dl; s2_d <= rotA;
     s3_v <= s2_v; s3_k <= s2_k; s3_d <= rotB; s3_r <= rold;
     s4_v <= s3_v; s4_k <= s3_k;
@@ -240,32 +270,25 @@ module phy_ldpc_dec
         w_sg[r][s5_k] <= s5_q[r][LW-1];
         pr_acc[r] <= pr_acc[r] ^ s5_lr[r][LW-1];
       end
-      qbuf[s5_k] <= s5_q;
       for (int r = 0; r < Z; r++) lsg[s5_k][r] <= s5_lr[r][LW-1];
     end
-    if (dst == D_END) begin
-      for (int i = 0; i < LMB - 1; i++)
-        for (int r = 0; r < Z; r++) begin
-          rg_m1[i][r] <= rg_m1[i+1][r]; rg_m2[i][r] <= rg_m2[i+1][r]; rg_idx[i][r] <= rg_idx[i+1][r];
-          rg_par[i][r] <= rg_par[i+1][r]; rg_sg[i][r] <= rg_sg[i+1][r];
-        end
-      for (int r = 0; r < Z; r++) begin
-        rg_m1[LMB-1][r] <= w_m1[r]; rg_m2[LMB-1][r] <= w_m2[r]; rg_idx[LMB-1][r] <= w_idx[r];
-        rg_par[LMB-1][r] <= w_par[r]; rg_sg[LMB-1][r] <= w_sg[r];
-      end
-    end
   end
+  // Q buffer RAM: write port (stage s5), synchronous read port (pass 2, address e2_cnt -> a1_q)
+  logic [Z*LW-1:0] s5_q_flat;
+  always_comb for (int r = 0; r < Z; r++) s5_q_flat[r*LW +: LW] = s5_q[r];
+  always_ff @(posedge clk) if (s5_v) qbuf[s5_k] <= s5_q_flat;
+  always_ff @(posedge clk) qbuf_q <= qbuf[e2_cnt];
 
   // ---- pass 2 pipeline: a1 (Q, R_new) -> a2 (L_new) -> w (write)
   logic        a1_v, a2_v, w_v;
   logic [4:0]  a1_k, a2_k;
   lv_t         a1_q, a1_rn, a2_l, w_l;
+  always_comb for (int r = 0; r < Z; r++) a1_q[r] = qbuf_q[r*LW +: LW];
   logic [5:0]  w_colr, w_shr;
   always_ff @(posedge clk) begin
     a1_v <= issue2; a1_k <= e2_cnt;
     a2_v <= a1_v;   a2_k <= a1_k;
     w_v  <= a2_v;
-    a1_q <= qbuf[e2_cnt];
     for (int r = 0; r < Z; r++) begin
       logic [MW-1:0] mg, sc;
       mg = (w_idx[r] == e2_cnt) ? w_m2[r] : w_m1[r];
@@ -364,11 +387,17 @@ module phy_ldpc_dec
   logic         o_first;
 
   // sign vector of the addressed column: captured raw, then rotated back to natural order one cycle later (timing)
-  logic [Z-1:0] raw_q;
+  logic [Z-1:0] raw_q, rraw_q;
   logic [5:0]   rotd_q;
   logic [Z-1:0] nat;
+  logic         o_par;                     // reading the parity columns (cfg_post)
+  always_comb for (int p = 0; p < Z; p++) raw_q[p] = out_sel ? rd_data[1][p][LW-1] : rd_data[0][p][LW-1];   // RAM output register
+  always_comb for (int p = 0; p < Z; p++) begin
+    logic signed [LW-1:0] lv;
+    lv = out_sel ? rd_data[1][p] : rd_data[0][p];
+    rraw_q[p] = (lv >= LW'(REL_THR)) || (lv <= -LW'(REL_THR));
+  end
   always_ff @(posedge clk) begin
-    for (int p = 0; p < Z; p++) raw_q[p] <= out_sel ? rd_data[1][p][LW-1] : rd_data[0][p][LW-1];
     rotd_q <= (coff[out_sel][out_col_r] == 6'd0) ? 6'd0 : 6'(Z) - coff[out_sel][out_col_r];
   end
   always_comb begin
@@ -380,6 +409,31 @@ module phy_ldpc_dec
     end
     nat = t;
   end
+  // column port (cfg_post): the raw column is registered first and rotated back one cycle later (timing: RAM output -> compare -> rotator)
+  logic         cq_v, cq_ok; logic [5:0] cq_idx, cq_rot; logic [Z-1:0] cq_h, cq_r, cnat_h, cnat_r;
+  always_comb begin
+    logic [Z-1:0] t, u;
+    t = cq_h;
+    for (int s = 0; s < 6; s++) begin
+      for (int p = 0; p < Z; p++) u[p] = cq_rot[s] ? t[(p + (1 << s)) % Z] : t[p];
+      t = u;
+    end
+    cnat_h = t;
+    t = cq_r;
+    for (int s = 0; s < 6; s++) begin
+      for (int p = 0; p < Z; p++) u[p] = cq_rot[s] ? t[(p + (1 << s)) % Z] : t[p];
+      t = u;
+    end
+    cnat_r = t;
+  end
+  always_ff @(posedge clk) begin
+    cq_v   <= cfg_post && !rst && (ost == O_RD) && (o_cyc == 2'd1 || o_cyc == 2'd2);
+    cq_idx <= {o_pair, o_cyc[1]}; cq_ok <= res_ok[out_sel]; cq_rot <= rotd_q; cq_h <= raw_q; cq_r <= rraw_q;
+    col_valid <= cq_v && !rst;
+    col_idx   <= cq_idx;
+    col_hard  <= cnat_h;
+    col_rel   <= cnat_r | {Z{cq_ok}};
+  end
 
   logic [119:0] cat;                       // bit i of the two columns (natural order) -> MSB-first byte stream
   always_comb for (int i = 0; i < Z; i++) begin cat[119 - i] = h0[i]; cat[59 - i] = h1[i]; end
@@ -388,15 +442,22 @@ module phy_ldpc_dec
     out_valid <= 1'b0; out_first <= 1'b0; out_last <= 1'b0; st_valid <= 1'b0; out_done_p <= 1'b0;
     if (rst) begin
       ost <= O_IDLE; out_sel <= 1'b0; o_pair <= '0; out_col_r <= '0; o_byte <= '0; o_cyc <= '0; o_first <= 1'b1;
-      st_ok <= 1'b0; st_iter <= '0;
+      st_ok <= 1'b0; st_iter <= '0; o_par <= 1'b0;
     end else begin
       case (ost)
-        O_IDLE: if (dcd[out_sel]) begin ost <= O_RD; o_pair <= '0; out_col_r <= '0; o_cyc <= '0; o_first <= 1'b1; end
+        O_IDLE: begin
+          o_par <= 1'b0;
+          if (dcd[out_sel]) begin ost <= O_RD; o_pair <= '0; out_col_r <= '0; o_cyc <= '0; o_first <= 1'b1; end
+        end
         O_RD: begin            // cycle 0: col 2p addressed, raw/offset registered at its end; 1: nat(col 2p) -> h0, col 2p+1 registered; 2: nat(col 2p+1) -> h1
           o_cyc <= o_cyc + 1'b1;
           if (o_cyc == 2'd0) out_col_r <= {o_pair, 1'b0} + 6'd1;
           if (o_cyc == 2'd1) h0 <= nat;
-          if (o_cyc == 2'd2) begin h1 <= nat; ost <= O_SHIFT; o_byte <= '0; end
+          if (o_cyc == 2'd2) begin
+            if (!o_par) begin h1 <= nat; ost <= O_SHIFT; o_byte <= '0; end
+            else if (o_pair == 5'(LNB / 2 - 1)) begin out_done_p <= 1'b1; out_done_b <= out_sel; ost <= O_IDLE; out_sel <= ~out_sel; end
+            else begin o_pair <= o_pair + 1'b1; o_cyc <= '0; out_col_r <= {(o_pair + 5'd1), 1'b0}; end
+          end
         end
         O_SHIFT: begin
           out_valid <= 1'b1;
@@ -404,8 +465,9 @@ module phy_ldpc_dec
           out_first <= o_first; o_first <= 1'b0;
           if (o_byte == 4'd14) begin
             if (o_pair == (lkb_c >> 1) - 5'd1) begin
-              out_last <= 1'b1; st_valid <= 1'b1; out_done_p <= 1'b1; out_done_b <= out_sel; ost <= O_IDLE;
-              st_ok <= res_ok[out_sel]; st_iter <= res_iter[out_sel]; out_sel <= ~out_sel;
+              out_last <= 1'b1; st_valid <= 1'b1; st_ok <= res_ok[out_sel]; st_iter <= res_iter[out_sel];
+              if (cfg_post) begin o_par <= 1'b1; o_pair <= o_pair + 1'b1; ost <= O_RD; o_cyc <= '0; out_col_r <= {(o_pair + 5'd1), 1'b0}; end
+              else begin out_done_p <= 1'b1; out_done_b <= out_sel; ost <= O_IDLE; out_sel <= ~out_sel; end
             end else begin
               o_pair <= o_pair + 1'b1; ost <= O_RD; o_cyc <= '0; out_col_r <= {(o_pair + 5'd1), 1'b0};
             end

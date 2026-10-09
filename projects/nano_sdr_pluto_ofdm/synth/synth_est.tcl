@@ -1,5 +1,5 @@
 # Out-of-context synthesis ESTIMATE of phy_rx_top / phy_tx_top (resource fit check, no implementation):
-#   vivado -mode batch -source synth_est.tcl -tclargs <top> <part> <outdir>
+#   vivado -mode batch -source synth_est.tcl -tclargs <top> <part> <outdir> [GENERIC:value ...]   (":" because the vivado.bat wrapper splits arguments at "=")
 # e.g. phy_rx_top / phy_tx_top on xczu27dr-ffve1156-1-i (reference part of ТЗ 003). Reports: utilization (post-synthesis), timing summary (un-routed, indicative only).
 set top  [lindex $argv 0]
 set part [lindex $argv 1]
@@ -16,9 +16,12 @@ foreach d {common tx rx} {
 }
 foreach f $files { read_verilog -sv [file join $root rtl $f] }
 set_part $part
-synth_design -top $top -part $part -mode out_of_context -generic CODED=1 -flatten_hierarchy rebuilt
+# further generics of the top (e.g. CA:1 UA_HW:0) follow the output directory on the command line
+set gen [list -generic CODED=1]
+foreach g [lrange $argv 3 end] { lappend gen -generic [string map {: =} $g] }
+synth_design -top $top -part $part -mode out_of_context {*}$gen -flatten_hierarchy rebuilt
 create_clock -period 8.000 -name clk [get_ports clk]
 report_utilization -file [file join $out ${top}_util.rpt]
 report_utilization -hierarchical -file [file join $out ${top}_util_hier.rpt]
-report_timing_summary -max_paths 5 -file [file join $out ${top}_timing.rpt]
+report_timing_summary -max_paths 200 -file [file join $out ${top}_timing.rpt]
 puts "SYNTH_EST_DONE $top"

@@ -47,8 +47,11 @@ run tb_phy_rx_top "CODED=1 MODE=0"
 run tb_phy_rx_top "CODED=1 MODE=2"
 run tb_phy_ldpc_dec MODE=1
 run tb_phy_ldpc_dec MODE=0
+run tb_phy_ldpc_dec "MODE=1 POST=1"
+run tb_phy_ldpc_dec "MODE=0 POST=1"
 run tb_phy_llr_demap QP=0
 run tb_phy_llr_demap QP=1
+run tb_phy_llr_demap "QP=0 UA=1"
 run tb_phy_noise_est
 run tb_phy_mmse_post
 run tb_phy_rx_decode_ldpc MODE=1
@@ -56,4 +59,6 @@ run tb_phy_rx_decode_ldpc MODE=0
 run tb_phy_regs_axil
 run tb_phy_rx_axis_top
 run tb_phy_tx_axis_top
+# code-aided second pass (TestTask004 Patch B): phy_rx_top (UA + CA) in xsim against the fixed-point back-end model on the RTL's own tracker output
+if (cd phy_sim && python experiments/rtl_runs_rxenh.py --check) > /tmp/tb_rxenh.log 2>&1; then echo "PASS rxenh_rtl_check UA=1 CA=1"; else echo "FAIL rxenh_rtl_check"; cat /tmp/tb_rxenh.log; fail=1; fi
 exit $fail

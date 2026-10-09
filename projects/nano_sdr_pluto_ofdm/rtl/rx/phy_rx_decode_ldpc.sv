@@ -8,6 +8,9 @@
 //   the last 20 filler words of every symbol are dropped) -> 225 bytes per codeword -> descrambler.
 //   Output: bytes (valid-only) with out_first (first byte of the packet) and out_last (last byte, after 2 * nsyms codewords).
 //   Statistics per packet (valid with the last byte): number of codewords that did not converge, maximum and total iterations.
+//   Code-aided second pass (p2 = 1, driven by phy_ca_refine): the re-equalised symbols of the packet enter through the same input, only the
+//   codewords that failed are decoded again (p2_skip[c] = 1 drops codeword c of the symbol like the filler words), the decoder output
+//   bypasses the packet bookkeeping and the descrambler (raw_*); cfg_post makes the decoder deliver all columns (col_*).
 // Golden: python/phy2_ref.py (decode path) with python/ldpc_fixed_ref.py (decoder, bit-exact)
 module phy_rx_decode_ldpc
   import phy_pkg::*;
@@ -20,6 +23,10 @@ module phy_rx_decode_ldpc
   input  logic                   in_first,
   input  logic                   in_last,
   input  logic                   in_hdr,             // the symbol being delivered is the header symbol
+  input  logic                   cfg_ua,             // uncertainty-aware LLR slopes (16-QAM)
+  input  logic                   cfg_post,           // decoder delivers all columns with reliability flags (code-aided receiver)
+  input  logic                   p2,                 // second pass in progress
+  input  logic [1:0]             p2_skip,            // second pass: codewords of the symbol that are not decoded again
   input  logic                   mode,               // data symbols: 0 = QPSK + LDPC 1/2, 1 = 16-QAM + LDPC 5/6 (static during a packet)
   input  logic signed [IQ_W-1:0] in_re,
   input  logic signed [IQ_W-1:0] in_im,
@@ -40,21 +47,31 @@ module phy_rx_decode_ldpc
   output logic                   hdr_ok,             // CRC-4 ok
   output logic                   hdr_mode,
   output logic [7:0]             hdr_nsyms,
-  output logic [13:0]            hdr_conf
+  output logic [13:0]            hdr_conf,
+  output logic                   raw_valid,          // second pass: decoder bytes (scrambled) and status
+  output logic [7:0]             raw_data,
+  output logic                   raw_st_valid,
+  output logic                   raw_st_ok,
+  output logic [4:0]             raw_st_iter,
+  output logic                   col_valid,          // cfg_post: columns of the codeword being output
+  output logic [5:0]             col_idx,
+  output logic [59:0]            col_hard,
+  output logic [59:0]            col_rel,
+  output logic                   dec_busy
 );
   // ---------------------------------------------------------------- soft demapper
   logic                 dm_valid, dm_first, dm_last;
   logic signed [5:0]    dm_llr [4];
   wire qm_in = in_hdr | ~mode;                       // QPSK demapping: header symbol and MAX RANGE data symbols
   phy_llr_demap u_dm (
-    .clk, .rst, .in_valid, .in_first, .in_last, .qpsk(qm_in), .in_re, .in_im, .rd_addr(prm_ra), .rd_data(prm_rd),
+    .clk, .rst, .in_valid, .in_first, .in_last, .qpsk(qm_in), .ua(cfg_ua), .in_re, .in_im, .rd_addr(prm_ra), .rd_data(prm_rd),
     .out_valid(dm_valid), .out_first(dm_first), .out_last(dm_last), .out_llr(dm_llr)
   );
-  // symbol-type flags travel with the demapper pipeline (latency 6)
-  logic [5:0] hdr_sr, qm_sr;
-  always_ff @(posedge clk) begin hdr_sr <= {hdr_sr[4:0], in_hdr}; qm_sr <= {qm_sr[4:0], qm_in}; end
-  wire hdr6 = hdr_sr[5];
-  wire qm6  = qm_sr[5];
+  // symbol-type flags travel with the demapper pipeline (latency 8)
+  logic [7:0] hdr_sr, qm_sr;
+  always_ff @(posedge clk) begin hdr_sr <= {hdr_sr[6:0], in_hdr}; qm_sr <= {qm_sr[6:0], qm_in}; end
+  wire hdr6 = hdr_sr[7];
+  wire qm6  = qm_sr[7];
   wire [23:0] dm_word = qm6 ? {dm_llr[0], dm_llr[1], 12'd0} : {dm_llr[0], dm_llr[1], dm_llr[2], dm_llr[3]};
 
   phy_hdr_dec u_hdr (
@@ -77,7 +94,7 @@ module phy_rx_decode_ldpc
   // ---------------------------------------------------------------- word counter inside the symbol: 0..1079 -> decoder, 1080..1099 dropped
   logic [10:0] wcnt;
   logic        dec_in_ready;
-  wire         to_dec = (wcnt < 11'd1080);
+  wire         to_dec = (wcnt < 11'd1080) && !(p2 && p2_skip[wcnt >= 11'd540]);
   logic        half;                     // QPSK: the first bin of a pair is held in h0
   logic [11:0] h0;
   wire         qm_d = ~mode;
@@ -101,7 +118,7 @@ module phy_rx_decode_ldpc
     if (rst) begin sym_cnt <= '0; nsyms_l <= '0; end
     else if (di_fire) begin
       if (di_first && sym_cnt == 8'd0) nsyms_l <= nsyms;
-      if (di_last) sym_cnt <= (sym_cnt + 8'd1 == nsyms_l) ? 8'd0 : sym_cnt + 8'd1;
+      if (di_last && !p2) sym_cnt <= (sym_cnt + 8'd1 == nsyms_l) ? 8'd0 : sym_cnt + 8'd1;
     end
   end
 
@@ -118,11 +135,15 @@ module phy_rx_decode_ldpc
   logic [7:0]  ld_data;
   logic [4:0]  ld_st_iter;
   phy_ldpc_dec u_ldpc (
-    .clk, .rst, .cfg_max_iter, .cfg_cs(mode),
+    .clk, .rst, .cfg_max_iter, .cfg_cs(mode), .cfg_post,
     .in_valid(di_valid && to_dec && (!qm_d || half)), .in_ready(dec_in_ready), .in_llr(ld_llr),
     .out_valid(ld_valid), .out_first(ld_first), .out_last(ld_last), .out_data(ld_data),
-    .st_valid(ld_st_valid), .st_ok(ld_st_ok), .st_iter(ld_st_iter), .busy(ld_busy)
+    .st_valid(ld_st_valid), .st_ok(ld_st_ok), .st_iter(ld_st_iter), .busy(ld_busy),
+    .col_valid, .col_idx, .col_hard, .col_rel
   );
+  assign raw_valid = ld_valid && p2; assign raw_data = ld_data;
+  assign raw_st_valid = ld_st_valid && p2; assign raw_st_ok = ld_st_ok; assign raw_st_iter = ld_st_iter;
+  assign dec_busy = ld_busy;
 
   // ---------------------------------------------------------------- codeword / packet bookkeeping
   logic [8:0]  cw_cnt;                   // codewords output in this packet
@@ -133,15 +154,15 @@ module phy_rx_decode_ldpc
   logic        last_cw;                  // registered: cw_cnt changes only once per codeword, a one-cycle lag is invisible
   always_ff @(posedge clk) last_cw <= (cw_cnt + 9'd1 == cw_total);
   always_ff @(posedge clk) begin
-    d_valid <= ld_valid; d_data <= ld_data; d_first <= 1'b0; d_last <= 1'b0; stat_valid <= 1'b0;
+    d_valid <= ld_valid && !p2; d_data <= ld_data; d_first <= 1'b0; d_last <= 1'b0; stat_valid <= 1'b0;
     cw_pulse <= 1'b0; cw_fail_pulse <= 1'b0;
     if (rst) begin cw_cnt <= '0; pkt_first <= 1'b1; fail_acc <= '0; imax_acc <= '0; isum_acc <= '0; end
     else begin
-      if (ld_valid) begin
+      if (ld_valid && !p2) begin
         d_first <= pkt_first && ld_first; if (ld_first) pkt_first <= 1'b0;
         d_last  <= ld_last && last_cw;
       end
-      if (ld_st_valid) begin
+      if (ld_st_valid && !p2) begin
         cw_pulse <= 1'b1; cw_fail_pulse <= !ld_st_ok;
         fail_acc <= fail_acc + (ld_st_ok ? 8'd0 : 8'd1);
         if (ld_st_iter > imax_acc) imax_acc <= ld_st_iter;

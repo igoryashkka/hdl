@@ -33,7 +33,7 @@ def layer_entries(base=None):
     return [[(j, int(base[i, j])) for j in range(NB) if base[i, j] >= 0] for i in range(base.shape[0])]
 
 
-def decode(llr_q: np.ndarray, max_iter: int = 8, base=None, early_stop: bool = True):
+def decode(llr_q: np.ndarray, max_iter: int = 8, base=None, early_stop: bool = True, return_post: bool = False):
     """llr_q: (B, N) int channel LLRs (positive = bit 0). Returns (hard (B, N) uint8, iterations (B,), parity_ok (B,))."""
     base = lr.H_BASE if base is None else base
     MB = base.shape[0]                  # layers of the selected code (6 for R = 5/6, 18 for R = 1/2): one clean iteration ends the decoding
@@ -47,6 +47,7 @@ def decode(llr_q: np.ndarray, max_iter: int = 8, base=None, early_stop: bool = T
     good = np.zeros(B, int)             # consecutive clean layers
     done = np.zeros(B, bool)
     frozen = np.zeros((B, lr.N), np.uint8)
+    frozen_l = np.zeros((B, lr.N), np.int64)        # posterior values at the moment of convergence (the RTL stops there)
     for it in range(1, max_iter + 1):
         for i in range(MB):
             e = ent[i]
@@ -92,9 +93,12 @@ def decode(llr_q: np.ndarray, max_iter: int = 8, base=None, early_stop: bool = T
                 its[newly] = it
                 if newly.any():
                     frozen[newly] = (L[newly].reshape(-1, lr.N) < 0).astype(np.uint8)
+                    frozen_l[newly] = L[newly].reshape(-1, lr.N)
                 done |= newly
         if early_stop and done.all():
             break
     hard = (L.reshape(B, lr.N) < 0).astype(np.uint8)
     hard = np.where(done[:, None], frozen, hard)           # a codeword that converged is frozen at the moment it converged
+    if return_post:                      # posterior L values (8 bit) at the end of the decoding (code-aided receiver: bit reliabilities)
+        return hard, its, done, np.where(done[:, None], frozen_l, L.reshape(B, lr.N))
     return hard, its, done

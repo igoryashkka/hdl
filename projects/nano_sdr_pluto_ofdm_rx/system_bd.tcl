@@ -4,7 +4,7 @@
 ## PHY RTL is shared: ../nano_sdr_pluto_ofdm/rtl
 ###############################################################################
 set ofdm_rtl_dir [file normalize [file join [file dirname [file normalize [info script]]] .. nano_sdr_pluto_ofdm rtl]]
-foreach ofdm_f {common/phy_pkg.sv rx/phy_rx_decode_ldpc.sv rx/phy_mmse_post.sv rx/phy_noise_est.sv rx/phy_tau_est.sv rx/phy_llr_demap.sv common/phy_lgcode.sv common/phy_ldpc_dec.sv common/phy_soft_pkg.sv common/phy_ldpc_pkg.sv common/phy_regs_axil.v rx/phy_rssi_code.sv common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv common/phy_delay_line.sv common/phy_cordic.sv common/phy_sincos.sv tx/phy_scrambler.sv tx/phy_interleaver.sv tx/phy_cp_insert.sv rx/phy_descrambler.sv rx/phy_qam_demapper.sv rx/phy_dc_remove.sv rx/phy_input_scale.sv rx/phy_sync_sc.sv rx/phy_cfo_coarse.sv rx/phy_nco_mixer.sv rx/phy_rx_window.sv rx/phy_fft_2048.sv rx/phy_rx_fft.sv rx/phy_bin_select.sv rx/phy_channel_estimator.sv rx/phy_equalizer.sv rx/phy_phase_tracker.sv rx/phy_rx_decode.sv rx/phy_rx_pkt_out.sv rx/phy_rx_top.sv rx/phy_rx_axis_top.v} {
+foreach ofdm_f {common/phy_pkg.sv rx/phy_rx_decode_ldpc.sv rx/phy_mmse_post.sv rx/phy_noise_est.sv rx/phy_tau_est.sv rx/phy_hdr_dec.sv rx/phy_g_smooth.sv common/phy_dyn_sr.sv rx/phy_llr_demap.sv common/phy_lgcode.sv common/phy_ldpc_dec.sv common/phy_soft_pkg.sv common/phy_ldpc_pkg.sv common/phy_regs_axil.v rx/phy_rssi_code.sv common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv common/phy_delay_line.sv common/phy_cordic.sv common/phy_sincos.sv tx/phy_scrambler.sv tx/phy_interleaver.sv tx/phy_cp_insert.sv rx/phy_descrambler.sv rx/phy_qam_demapper.sv rx/phy_dc_remove.sv rx/phy_input_scale.sv rx/phy_sync_sc.sv rx/phy_cfo_coarse.sv rx/phy_nco_mixer.sv rx/phy_rx_window.sv rx/phy_fft_2048.sv rx/phy_rx_fft.sv rx/phy_bin_select.sv rx/phy_channel_estimator.sv rx/phy_equalizer.sv rx/phy_phase_tracker.sv rx/phy_rx_decode.sv rx/phy_rx_pkt_out.sv rx/phy_w_core.sv rx/phy_ca_refine.sv rx/phy_rx_top.sv rx/phy_rx_axis_top.v} {
   add_files -norecurse [file join $ofdm_rtl_dir $ofdm_f]
 }
 set_property file_type SystemVerilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_*.sv}]
@@ -238,6 +238,10 @@ ad_ip_parameter pkt_dma CONFIG.DMA_DATA_WIDTH_SRC 64
 ad_ip_parameter pkt_dma CONFIG.DMA_AXI_ADDR_WIDTH 30
 
 create_bd_cell -type module -reference phy_rx_axis_top phy_rx
+# RX enhancement patches (TestTask004): PHY_UA = uncertainty-aware LLR at reset, PHY_UA_HW = 0 removes its logic (baseline), PHY_CA = code-aided second pass hardware (environment, default 0)
+if {[info exists ::env(PHY_UA)]} { set_property CONFIG.UA $::env(PHY_UA) [get_bd_cells phy_rx] }
+if {[info exists ::env(PHY_UA_HW)]} { set_property CONFIG.UA_HW $::env(PHY_UA_HW) [get_bd_cells phy_rx] }
+if {[info exists ::env(PHY_CA)]} { set_property CONFIG.CA $::env(PHY_CA) [get_bd_cells phy_rx] }
 ad_ip_instance xlconstant pkt_dma_strb
 ad_ip_parameter pkt_dma_strb CONFIG.CONST_WIDTH 8
 ad_ip_parameter pkt_dma_strb CONFIG.CONST_VAL 255

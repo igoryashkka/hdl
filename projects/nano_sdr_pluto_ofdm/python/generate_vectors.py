@@ -533,6 +533,16 @@ for _s in range(3):
         _se.append(sum((int(_llr[_k][_j]) & 0x3F) << (6 * (3 - _j)) for _j in range(4)))
 wr("llr_in.mem", _sx, 8)
 wr("llr_exp.mem", _se, 6)
+# the same stimulus with the uncertainty-aware slopes (Patch A)
+import rxenh_fixed_ref as _rxe
+_seu = []
+for _s in range(3):
+    _xs = [(v >> 16) & 0xFFFF for v in _sx[_s * _nb:(_s + 1) * _nb]]; _ys = [v & 0xFFFF for v in _sx[_s * _nb:(_s + 1) * _nb]]
+    _xs = np.array([v - 65536 if v >= 32768 else v for v in _xs]); _ys = np.array([v - 65536 if v >= 32768 else v for v in _ys])
+    _lu = _rxe.demap_soft_ua(_xs, _ys, _T, _gm, _ge)
+    for _k in range(_nb):
+        _seu.append(sum((int(_lu[_k][_j]) & 0x3F) << (6 * (3 - _j)) for _j in range(4)))
+wr("llu_exp.mem", _seu, 6)
 print("llr demap vectors:", len(_sx))
 
 # ---- noise estimator: 3 FFT frames (first and third measured), guard-bin energy -> log code ----
@@ -730,3 +740,23 @@ def _rx_stream(tag, modes, snrs, cfos, paths, seeds):
 _rx_stream("rxq", [0, 0], [14, 8], [9000.0, -7000.0], [((0, 1),), ((0, 1), (9, 0.4j))], [41, 42])
 _rx_stream("rxm", [1, 0], [33, 8], [9000.0, -7000.0], [((0, 1),), ((0, 1), (9, 0.4j))], [51, 52])
 print("OK dual-mode vectors in", OUT)
+
+# ---- LDPC decoder, column output with reliability flags (cfg_post, code-aided receiver): {rel[59:0], hard[59:0]} per column, 36 per codeword ----
+import rxenh_fixed_ref as _rxe2
+
+
+def _col_words(llrq, base):
+    hard, its, done, L = ldpc_fixed_ref.decode(llrq, LDP_MAXIT, base=base, return_post=True)
+    rel = (np.abs(L) >= _rxe2.REL_THR) | done[:, None]
+    out = []
+    for i in range(len(llrq)):
+        for c in range(36):
+            h = sum(int(hard[i][60 * c + p]) << p for p in range(60))
+            r = sum(int(rel[i][60 * c + p]) << p for p in range(60))
+            out.append((r << 60) | h)
+    return out
+
+
+wr("ldp_col.mem", _col_words(_llrq, ldpc_ref.H_BASE), 30)
+wr("ldp0_col.mem", _col_words(_llrq0, _b12), 30)
+print("OK decoder column vectors")

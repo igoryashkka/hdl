@@ -24,7 +24,7 @@ module tb_phy_rx_top #(parameter bit CODED = 1'b0, parameter int MODE = 1);
   logic in_valid = 0; logic signed [15:0] in_i = 0, in_q = 0;
   logic m_axis_valid, m_axis_ready = 0, m_axis_last; logic [63:0] m_axis_data;
   logic [15:0] st_det_count, st_pkt_count, st_drop_count, st_wd_count; logic [7:0] st_flags; logic st_busy;
-  logic cfg_smooth = 1;
+  logic cfg_smooth = 1; logic cfg_ua = 0; logic cfg_ca = 0;
   logic cfg_hdr_en = 1, cfg_mode = (MODE == 1) ? 1'b0 : 1'b1;
   logic st_mode, st_hdr_ok, st_hdr_mism; logic [13:0] st_hdr_conf;
   logic cfg_mmse = 1; logic [4:0] cfg_max_iter = 10; logic signed [12:0] cfg_bad_thr = 106; logic cfg_ft_en = 1; logic [7:0] cfg_tau_tgt = 56;

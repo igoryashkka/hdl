@@ -11,7 +11,7 @@ module tb_phy_channel_estimator #(parameter int SM = 0);
   logic [39:0] expd [NA];
   logic [11:0] expl [NA];
   logic [41:0] sig_sum; logic [41:0] expsum [1]; logic tau_valid; logic signed [19:0] tau_q8; logic [19:0] exptau [1]; int ntau = 0;
-  logic [10:0] eng_ra = 0; logic [39:0] eng_rw; logic signed [11:0] eng_rlg; logic eng_we = 0; logic [10:0] eng_wa = 0; logic [39:0] eng_wd = 0;
+  logic eng_sel = 0; logic [10:0] eng_ra = 0; logic [39:0] eng_rw; logic signed [11:0] eng_rlg; logic eng_we = 0; logic [10:0] eng_wa = 0; logic [39:0] eng_wd = 0;
   logic cfg_smooth = SM[0];
   logic in_valid = 0, in_first = 0, in_last = 0; logic signed [15:0] in_re = 0, in_im = 0;
   logic done, rd_en = 0; logic [10:0] rd_addr = 0; logic [39:0] rd_data;
@@ -42,7 +42,7 @@ module tb_phy_channel_estimator #(parameter int SM = 0);
       if (rd_data !== expd[s]) begin
         errors++; if (errors < 10) $display("RAM mismatch s=%0d got %010x exp %010x", s, rd_data, expd[s]);
       end
-      eng_ra = s; @(posedge clk); #1;
+      eng_sel = 1; eng_ra = s; @(posedge clk); #1; eng_sel = 0;
       if (eng_rw !== expd[s]) begin errors++; if (errors < 10) $display("mirror RAM mismatch s=%0d got %010x exp %010x", s, eng_rw, expd[s]); end
       if ({eng_rlg} !== expl[s]) begin errors++; if (errors < 10) $display("lg mismatch s=%0d got %0d exp %0d", s, eng_rlg, $signed(expl[s])); end
     end

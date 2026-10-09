@@ -6,7 +6,9 @@
 //   Output bit order: [I b0, I b1, Q b0, Q b1], LLR > 0 => bit 0 (same convention as phy_qam_demapper).
 //   QPSK (qpsk = 1, sampled with every bin and pipelined with it): constellation +-9216 per axis (= 2.25 QAM_UNIT, the same mean power as
 //   16-QAM), LLR = sat( ((-(x + (x >>> 3))) * gm) >> (SH_C - ge - 1) )  (x * 2.25 = x * 9/8 * 2); out_llr = [I, Q, 0, 0].
-// Latency 6, throughput 1 bin/cycle, 4 DSP.   Golden: python/phy2_fixed_ref.py::demap_soft (bit-exact)
+//   Uncertainty-aware slopes (ua = 1, 16-QAM only; ТЗ 004 Patch A, golden python/rxenh_fixed_ref.py::demap_soft_ua): the channel-estimate
+//   error grows with the symbol energy, so with d = |x| - T:  L1 = (d * 57) >>> 6 ;  L0 = -x for d <= 0, else -sgn(x) * (T + ((d * 51) >>> 6)).
+// Latency 8, throughput 1 bin/cycle, 4 DSP.   Golden: python/phy2_fixed_ref.py::demap_soft (bit-exact)
 module phy_llr_demap
   import phy_pkg::*;
   import phy_soft_pkg::*;
@@ -17,6 +19,7 @@ module phy_llr_demap
   input  logic                   in_first,
   input  logic                   in_last,
   input  logic                   qpsk,
+  input  logic                   ua,             // uncertainty-aware slopes (static per packet)
   input  logic signed [IQ_W-1:0] in_re,
   input  logic signed [IQ_W-1:0] in_im,
   output logic [10:0]            rd_addr,
@@ -42,21 +45,52 @@ module phy_llr_demap
   wire [5:0]        gm1 = rd_data[12:7];
   wire signed [6:0] ge1 = rd_data[6:0];
 
+  // S2a: |x| - T per axis
+  logic va, fa, la, qa; logic signed [IQ_W-1:0] xar, xai; logic signed [16:0] dar, dai; logic [15:0] ta; logic [5:0] gma; logic signed [6:0] gea;
+  always_ff @(posedge clk) begin
+    if (rst) va <= 1'b0; else va <= v1;
+    fa <= f1; la <= l1; qa <= q1; gma <= gm1; gea <= ge1; xar <= x1r; xai <= x1i; ta <= t1;
+    dar <= (x1r[IQ_W-1] ? 17'(-x1r) : 17'(x1r)) - 17'($signed({1'b0, t1}));
+    dai <= (x1i[IQ_W-1] ? 17'(-x1i) : 17'(x1i)) - 17'($signed({1'b0, t1}));
+  end
+  // uncertainty-aware terms: (d * 57) >>> 6 and T + ((d * 51) >>> 6)  (constant multipliers as shift-adds)
+  function automatic logic signed [16:0] ua_mid(input logic signed [16:0] d);
+    logic signed [23:0] p;
+    p = (24'(d) <<< 6) - (24'(d) <<< 3) + 24'(d);                 // d * 57
+    return 17'(p >>> 6);
+  endfunction
+  function automatic logic signed [16:0] ua_out(input logic signed [16:0] d, input logic [15:0] t);
+    logic signed [23:0] p;
+    p = (24'(d) <<< 5) + (24'(d) <<< 4) + (24'(d) <<< 1) + 24'(d);  // d * 51
+    return 17'($signed({1'b0, t})) + 17'(p >>> 6);
+  endfunction
+  // S2b: the uncertainty-aware terms in a stage of their own (timing: three adders in front of the multiplier input otherwise)
+  logic vb, fb, lb, qb; logic signed [IQ_W-1:0] xbr, xbi; logic signed [16:0] dbr, dbi, umr, umi, uor, uoi; logic [5:0] gmb; logic signed [6:0] geb;
+  always_ff @(posedge clk) begin
+    if (rst) vb <= 1'b0; else vb <= va;
+    fb <= fa; lb <= la; qb <= qa; gmb <= gma; geb <= gea; xbr <= xar; xbi <= xai; dbr <= dar; dbi <= dai;
+    umr <= ua_mid(dar); umi <= ua_mid(dai); uor <= ua_out(dar, ta); uoi <= ua_out(dai, ta);
+  end
   // S2: axis values (17 bit signed)
   logic v2, f2, l2, q2; logic signed [16:0] a2 [4]; logic [5:0] gm2; logic signed [6:0] ge2;
   always_ff @(posedge clk) begin
-    if (rst) v2 <= 1'b0; else v2 <= v1;
-    f2 <= f1; l2 <= l1; q2 <= q1; gm2 <= gm1; ge2 <= ge1;
-    if (q1) begin                                   // QPSK: [I, Q, 0, 0], value * 9/8 (the missing factor 2 is taken from the shift)
-      a2[0] <= -(17'(x1r) + 17'(x1r >>> 3));
-      a2[1] <= -(17'(x1i) + 17'(x1i >>> 3));
+    if (rst) v2 <= 1'b0; else v2 <= vb;
+    f2 <= fb; l2 <= lb; q2 <= qb; gm2 <= gmb; ge2 <= geb;
+    if (qb) begin                                   // QPSK: [I, Q, 0, 0], value * 9/8 (the missing factor 2 is taken from the shift)
+      a2[0] <= -(17'(xbr) + 17'(xbr >>> 3));
+      a2[1] <= -(17'(xbi) + 17'(xbi >>> 3));
       a2[2] <= '0;
       a2[3] <= '0;
+    end else if (ua) begin
+      a2[0] <= (dbr <= 0) ? -17'(xbr) : (xbr[IQ_W-1] ? uor : -uor);
+      a2[1] <= umr;
+      a2[2] <= (dbi <= 0) ? -17'(xbi) : (xbi[IQ_W-1] ? uoi : -uoi);
+      a2[3] <= umi;
     end else begin
-      a2[0] <= -17'(x1r);
-      a2[1] <= (x1r[IQ_W-1] ? 17'(-x1r) : 17'(x1r)) - 17'($signed({1'b0, t1}));
-      a2[2] <= -17'(x1i);
-      a2[3] <= (x1i[IQ_W-1] ? 17'(-x1i) : 17'(x1i)) - 17'($signed({1'b0, t1}));
+      a2[0] <= -17'(xbr);
+      a2[1] <= dbr;
+      a2[2] <= -17'(xbi);
+      a2[3] <= dbi;
     end
   end
 

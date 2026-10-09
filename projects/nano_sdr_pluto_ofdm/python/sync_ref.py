@@ -95,9 +95,10 @@ def cfo_inc(p_re, p_im, log2l=10):
     return (-(ang_s >> log2l)) & 0xFFFFFFFF
 
 
-def detect_events(i, q, hold, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_len=TRACK_LEN):
+def detect_events(i, q, hold, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_len=TRACK_LEN, thr_sh=1):
     """Like detect(), but returns ALL events; after an event the FSM stays DONE for `hold` samples (models the RX controller
-    re-arming the detector once the previous packet has been processed). Running sums keep going (as in the RTL)."""
+    re-arming the detector once the previous packet has been processed). Running sums keep going (as in the RTL).
+    thr_sh: detection threshold |P| > R >> thr_sh (RTL: 1 = half of the window energy, i.e. SNR > 0 dB; other values are model-only diagnostics)."""
     n_s = len(i)
     i = np.asarray(i, dtype=np.int64); q = np.asarray(q, dtype=np.int64)
     qr_h = np.zeros(L, np.int64); qi_h = np.zeros(L, np.int64); e_h = np.zeros(L, np.int64)
@@ -118,7 +119,7 @@ def detect_events(i, q, hold, rmin=RMIN_DEFAULT, L=L, qsh=QSH, box=BOX, track_le
         a, b = abs(Pr), abs(Pi)
         mx, mn = max(a, b), min(a, b)
         mag = mx + (mn >> 1) - (mn >> 3)
-        cond = (R >= rmin) and (mag > (R >> 1))
+        cond = (R >= rmin) and (mag > (R >> thr_sh))
         mc = mag if cond else 0
         bslot = n % box
         mc_old = mc_h[bslot] if n >= box else 0

@@ -1,7 +1,8 @@
 // Self-checking TB: phy_ldpc_dec vs python/ldpc_fixed_ref.py (bit-exact info bytes, iteration count, converged flag).
 // 10 codewords back to back (clean, marginal, failing at the iteration limit, all-zero LLRs, noise only), random input gaps,
 // output checked byte by byte (225 per codeword), first/last flags, status with the last byte, load/decode/output overlap.
-module tb_phy_ldpc_dec #(parameter int MODE = 1);     // 1: R = 5/6 (225 bytes / codeword), 0: R = 1/2 (135 bytes)
+// POST = 1: cfg_post, additionally all 36 columns of every codeword (hard decisions + reliability flags) vs ldpc_fixed_ref (return_post).
+module tb_phy_ldpc_dec #(parameter int MODE = 1, parameter int POST = 0);     // 1: R = 5/6 (225 bytes / codeword), 0: R = 1/2 (135 bytes)
   localparam int NCW = 10, NW = 540, NB = MODE ? 225 : 135, MAXIT = 10;
   logic clk = 0, rst = 1;
   always #5 clk = ~clk;
@@ -9,6 +10,10 @@ module tb_phy_ldpc_dec #(parameter int MODE = 1);     // 1: R = 5/6 (225 bytes /
   logic [8:0]  expd [NCW * (NB + 1)];
   logic [4:0]  cfg_max_iter = MAXIT;
   logic        cfg_cs = MODE[0];
+  logic        cfg_post = POST[0];
+  logic        col_valid; logic [5:0] col_idx; logic [59:0] col_hard, col_rel;
+  logic [119:0] expc [NCW * 36];
+  int          ncol = 0;
   logic in_valid = 0, in_ready;
   logic signed [5:0] in_llr [4];
   logic out_valid, out_first, out_last, st_valid, st_ok, busy;
@@ -34,6 +39,14 @@ module tb_phy_ldpc_dec #(parameter int MODE = 1);     // 1: R = 5/6 (225 bytes /
         nb_out = 0;
       end
     end
+    if (col_valid) begin
+      if (!POST) begin errors++; $display("column output without cfg_post"); end
+      else if (ncol < NCW * 36) begin
+        if (col_idx !== 6'(ncol % 36)) begin errors++; if (errors < 10) $display("column %0d index %0d", ncol, col_idx); end
+        if ({col_rel, col_hard} !== expc[ncol]) begin errors++; if (errors < 10) $display("cw %0d column %0d got %030x exp %030x", ncol / 36, ncol % 36, {col_rel, col_hard}, expc[ncol]); end
+      end
+      ncol++;
+    end
     if (st_valid) begin
       if (ncw_out < NCW) begin
         if ({st_ok, 3'b0, st_iter} !== {expd[ncw_out * (NB + 1) + NB][8], 3'b0, expd[ncw_out * (NB + 1) + NB][4:0]}) begin
@@ -47,6 +60,7 @@ module tb_phy_ldpc_dec #(parameter int MODE = 1);     // 1: R = 5/6 (225 bytes /
   initial begin
     $readmemh(MODE ? "vec/ldp_in.mem" : "vec/ldp0_in.mem", stim);
     $readmemh(MODE ? "vec/ldp_exp.mem" : "vec/ldp0_exp.mem", expd);
+    if (POST) $readmemh(MODE ? "vec/ldp_col.mem" : "vec/ldp0_col.mem", expc);
     repeat (6) @(posedge clk); #1; rst = 0; repeat (3) @(posedge clk);
     for (int c = 0; c < NCW; c++)
       for (int w = 0; w < NW; w++) begin
@@ -59,8 +73,9 @@ module tb_phy_ldpc_dec #(parameter int MODE = 1);     // 1: R = 5/6 (225 bytes /
     @(posedge clk); #1; in_valid = 0;
     repeat (200000) begin @(posedge clk); if (ncw_out == NCW) break; end
     repeat (50) @(posedge clk);
+    if (POST && ncol !== NCW * 36) begin errors++; $display("columns out %0d != %0d", ncol, NCW * 36); end
     if (ncw_out !== NCW) begin errors++; $display("codewords out %0d != %0d", ncw_out, NCW); end
-    if (errors == 0) $display("TEST PASSED tb_phy_ldpc_dec MODE=%0d (%0d codewords bit-exact)", MODE, NCW);
+    if (errors == 0) $display("TEST PASSED tb_phy_ldpc_dec MODE=%0d POST=%0d (%0d codewords bit-exact)", MODE, POST, NCW);
     else $display("TEST FAILED tb_phy_ldpc_dec errors=%0d", errors);
     $finish;
   end

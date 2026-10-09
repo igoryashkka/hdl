@@ -47,7 +47,7 @@ in the middle of its payload.
 ## RX
 
 ```
- IQ -> scale -> DC -> Schmidl-Cox -> coarse CFO -> NCO -> [WIN_DELAY = 640 samples] -> window -> FFT -> bin select
+ IQ -> scale -> DC -> Schmidl-Cox -> coarse CFO -> NCO -> [WIN_DELAY = 704 samples, in front of the NCO since v0.8.0] -> window -> FFT -> bin select
    LTS : G = Y*sigma -> [3-bin smoothing] -> |G|^2, weights, log codes, fine timing          noise (guard bins) -> post engine (MMSE gain / bias per bin)
    data: equalizer -> CPE + SFO slope tracker -> LLR demapper [QPSK | 16-QAM] -> deinterleaver [rot_en] -> LDPC decoder [1/2 | 5/6] -> descrambler -> packet
    header symbol: tracker -> QPSK LLR -> phy_hdr_dec -> (MODE_ID, nsyms, CRC ok)  --> mode_q for the data symbols

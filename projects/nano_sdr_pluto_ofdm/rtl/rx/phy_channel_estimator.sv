@@ -27,6 +27,7 @@ module phy_channel_estimator
   input  logic [10:0]            rd_addr,
   output logic [39:0]            rd_data,
   // second memory side for the MMSE post engine (phy_mmse_post): read weights + log|G|^2 code, rewrite weights
+  input  logic                   eng_sel,       // 1: the read port serves the post engine (eng_ra), 0: the equalizer (rd_addr); they never run at the same time
   input  logic [10:0]            eng_ra,
   output logic [39:0]            eng_rw,
   output logic signed [11:0]     eng_rlg,
@@ -241,16 +242,20 @@ module phy_channel_estimator
   phy_tau_est u_tau (.clk, .rst, .start(tstart), .p_re(pacc_r), .p_im(pacc_i), .tau_valid, .tau_q8);
 
   // ---------------------------------------------------------------- weight RAM (write at stage O, synchronous read port)
-  (* ram_style = "block" *) logic [39:0] wram [NA];
-  (* ram_style = "block" *) logic [39:0] wram_e [NA];                      // mirror read by the post engine
-  logic signed [11:0] lgram [NA];
-  always_ff @(posedge clk) begin
-    if (vo) begin wram[ao] <= w_o; wram_e[ao] <= w_o; lgram[ao] <= lg_pipe[11]; end
-    else if (eng_we) begin wram[eng_wa] <= eng_wd; wram_e[eng_wa] <= eng_wd; end
-    if (rd_en) rd_data <= wram[rd_addr];
-    eng_rw  <= wram_e[eng_ra];
-    eng_rlg <= lgram[eng_ra];
-  end
+  // one block RAM (was two LUT-RAM copies): write port = estimator (stage O) or post engine rewrite; the read port is shared in time
+  (* ram_style = "block" *) logic [39:0] wram [2048];
+  (* ram_style = "block" *) logic signed [11:0] lgram [2048];
+  wire         ww_en = vo | eng_we;
+  wire  [10:0] ww_a  = vo ? ao : eng_wa;
+  wire  [39:0] ww_d  = vo ? w_o : eng_wd;
+  wire  [10:0] wr_a  = eng_sel ? eng_ra : rd_addr;
+  logic [39:0] wr_q;
+  always_ff @(posedge clk) if (ww_en) wram[ww_a] <= ww_d;
+  always_ff @(posedge clk) wr_q <= wram[wr_a];
+  always_ff @(posedge clk) if (vo) lgram[ao] <= lg_pipe[11];
+  always_ff @(posedge clk) eng_rlg <= lgram[eng_ra];
+  assign rd_data = wr_q;
+  assign eng_rw  = wr_q;
   always_ff @(posedge clk) begin
     if (rst) done <= 1'b0; else done <= vo & lo;
   end

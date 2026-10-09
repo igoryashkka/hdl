@@ -5,7 +5,7 @@
 //
 // Packet record format: see rtl/rx/phy_rx_pkt_out.sv (3 header beats + payload, tlast on the last beat).
 // Register map (base address in the BD, 0x7C440000): see rtl/common/phy_regs_axil.v for the generic part.
-//   cfg 0x10 NSYMS(8, data symbols)  0x14 RMIN(32)  0x18 GAIN_SH(4, signed)  0x1C MMSE(bit0) HDR_EN(bit1: mode from the header symbol) MODE(bit2: manual / fallback
+//   cfg 0x10 NSYMS(8, data symbols)  0x14 RMIN(32)  0x18 GAIN_SH(4, signed)  0x1C MMSE(bit0) HDR_EN(bit1: mode from the header symbol) UA(bit3: uncertainty-aware LLR) CA(bit4: code-aided second pass, needs parameter CA = 1) MODE(bit2: manual / fallback
 //   mode, 0 = MAX RANGE QPSK + LDPC 1/2, 1 = MAX RATE 16-QAM + LDPC 5/6)  0x20 MAX_ITER(5)  0x24 BAD_THR(13, signed)  0x28 FT_EN(bit0) SMOOTH(bit1: smoothing of the channel estimate)  0x2C TAU_TGT(8)
 //   (reset values = the module parameters)
 //   status snapshot words (write SNAP 0x08, poll bit0, read 0x80 + 4*i):
@@ -30,6 +30,9 @@ module phy_rx_axis_top #(
   parameter        MODE    = 1'b1,          // manual mode / fallback when the header CRC fails
   parameter [4:0]  MAX_ITER = 5'd10,
   parameter [12:0] BAD_THR = 13'd106,       // bad-subcarrier threshold, SNR code (log2 * 32): 106 = 10 dB
+  parameter        UA      = 1'b0,          // uncertainty-aware LLR (Patch A)
+  parameter        UA_HW   = 1'b1,          // uncertainty-aware LLR hardware present (0: baseline build)
+  parameter        CA      = 1'b0,          // code-aided second pass (Patch B): hardware present and enabled at reset
   parameter        SMOOTH  = 1'b1,          // LTS channel estimate smoothing (3 bins, ~2 dB at low SNR)
   parameter        FT_EN   = 1'b1,          // fine timing loop (window re-centering from the LTS)
   parameter [7:0]  TAU_TGT = 8'd56          // wanted LTS window earliness [samples]
@@ -84,9 +87,9 @@ module phy_rx_axis_top #(
 
   wire signed [19:0] st_tau_q8; wire signed [7:0] st_w0_adj; wire st_mode, st_hdr_ok, st_hdr_mism; wire [13:0] st_hdr_conf;
   wire [15:0] st_snr_avg, st_snr_min, st_bad, st_noise, st_cw_count, st_cwfail_count; wire [7:0] st_ldpc_fail; wire [4:0] st_ldpc_imax; wire [11:0] st_ldpc_isum;
-  phy_rx_top #(.CODED(CODED)) u_phy (
+  phy_rx_top #(.CODED(CODED), .CA(CA), .UA_HW(UA_HW)) u_phy (
     .clk(clk), .rst(rst_r), .cfg_nsyms(cfg[7:0]), .cfg_rmin(cfg[63:32]), .cfg_gain_sh(cfg[67:64]),
-    .cfg_mmse(cfg[96]), .cfg_hdr_en(cfg[97]), .cfg_mode(cfg[98]), .cfg_max_iter(cfg[132:128]), .cfg_bad_thr(cfg[172:160]), .cfg_ft_en(cfg[192]), .cfg_smooth(cfg[193]), .cfg_tau_tgt(cfg[231:224]),
+    .cfg_mmse(cfg[96]), .cfg_hdr_en(cfg[97]), .cfg_mode(cfg[98]), .cfg_ua(cfg[99]), .cfg_ca(cfg[100]), .cfg_max_iter(cfg[132:128]), .cfg_bad_thr(cfg[172:160]), .cfg_ft_en(cfg[192]), .cfg_smooth(cfg[193]), .cfg_tau_tgt(cfg[231:224]),
     .in_valid(in_valid), .in_i(i_in), .in_q(q_in),
     .m_axis_valid(m_axis_valid), .m_axis_ready(m_axis_ready), .m_axis_data(m_axis_data), .m_axis_last(m_axis_last),
     .st_det_count(st_det), .st_pkt_count(st_pkt), .st_drop_count(st_drop), .st_wd_count(st_wd), .st_flags(st_flags), .st_busy(st_busy),
@@ -153,7 +156,7 @@ module phy_rx_axis_top #(
 
   phy_regs_axil #(
     .ID(32'h4F465258), .NCFG(NCFG), .NST(NST),
-    .CFG_INIT({{24'd0, TAU_TGT}, {30'd0, SMOOTH, FT_EN}, {19'd0, BAD_THR}, {27'd0, MAX_ITER}, {29'd0, MODE, HDR_EN, MMSE}, {28'd0, GAIN_SH}, RMIN, {24'd0, NSYMS}})
+    .CFG_INIT({{24'd0, TAU_TGT}, {30'd0, SMOOTH, FT_EN}, {19'd0, BAD_THR}, {27'd0, MAX_ITER}, {27'd0, CA, UA, MODE, HDR_EN, MMSE}, {28'd0, GAIN_SH}, RMIN, {24'd0, NSYMS}})
   ) u_regs (
     .s_axi_aclk(s_axi_aclk), .s_axi_aresetn(s_axi_aresetn),
     .s_axi_awaddr(s_axi_awaddr), .s_axi_awvalid(s_axi_awvalid), .s_axi_awready(s_axi_awready),

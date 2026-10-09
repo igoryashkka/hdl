@@ -51,6 +51,7 @@ LTS_WINDOW_OFFSET = P.CP_LEN - 40       # FFT window of the LTS starts at n_best
 
 
 hdr_ref = importlib.import_module("hdr_ref")
+rxenh_fixed_ref = importlib.import_module("rxenh_fixed_ref")
 
 # phy.mode: "current" = legacy uncoded 16-QAM PHY (550 bytes / symbol, no header); every other value is the dual-mode frame
 # [sync][LTS][header][data...]:  "max_range" = QPSK + LDPC 1/2 (MODE_ID 0), "max_rate" = 16-QAM + LDPC 5/6 (MODE_ID 1; "new" is an alias),
@@ -75,7 +76,8 @@ def phy_layout(cfg: dict):
 _PHY_DEFAULTS = {
     "reference": {"eq": "zf", "llr": "hard", "fine_timing": False, "cpe": True, "sfo": False, "chest_smooth": 0},
 }
-_PHY_NEW = {"eq": "mmse", "llr": "weighted", "fine_timing": True, "cpe": True, "sfo": True, "chest_smooth": 1, "max_iter": 10}
+_PHY_NEW = {"eq": "mmse", "llr": "weighted", "fine_timing": True, "cpe": True, "sfo": True, "chest_smooth": 1, "max_iter": 10,
+            "ua": False, "ca": False}        # ТЗ 004: ua = uncertainty-aware LLR (Patch A), ca = one code-aided pass (Patch B)
 
 
 def phy_opts(cfg: dict) -> dict:
