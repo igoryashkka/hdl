@@ -918,7 +918,9 @@ static int run_tx(const struct opts *o)
 		g_coded = (hw_snapshot(&f) == 0) ? (int)(f.w[REG_FEATURE_W] & 1) : 0;
 		if (o->force_coded >= 0)
 			g_coded = o->force_coded;
-		printf("PHY mode: %s\n", g_coded ? "coded (LDPC R=5/6, 450 payload bytes per OFDM symbol)" : "uncoded (550 bytes per symbol)");
+		printf("PHY mode: %s\n", !g_coded ? "uncoded (550 bytes per symbol)"
+		                       : g_mode ? "MAX RATE: 16-QAM, LDPC R=5/6, 450 payload bytes per OFDM symbol"
+		                                : "MAX RANGE: QPSK, LDPC R=1/2, 135 payload bytes per OFDM symbol");
 	}
 	double gain = o->sweep ? o->sw_from : o->tx_gain_db;
 	struct rfcfg rf = { o->freq_hz, o->fs_hz, 20e6, gain, 0, 0 };
