@@ -148,6 +148,23 @@ static void app_build(uint8_t *buf, int nsyms, uint32_t seq, uint32_t run_seed, 
 	wr32(buf + n - 4, crc32_buf(buf, n - 4));
 }
 
+/* File mode (--file): the PRBS region carries chunk `idx` of the file; step_id = chunk index, prbs_seed = file size, both CRCs
+ * recomputed. Chunk size = nbytes - APP_HDR - 4; the last chunk is zero padded. A receiver reassembles the file from the
+ * packets whose payload CRC is good (phy_sim/experiments/image_rx.py). */
+static void app_put_file(uint8_t *buf, size_t n, const uint8_t *file, size_t fsize, uint32_t idx)
+{
+	size_t chunk = n - APP_HDR - 4;
+	size_t off = (size_t)idx * chunk;
+	size_t len = off < fsize ? (fsize - off < chunk ? fsize - off : chunk) : 0;
+	wr16(buf + 12, (uint16_t)idx);
+	wr32(buf + 24, (uint32_t)fsize);
+	wr32(buf + 28, crc32_buf(buf, 28));
+	memset(buf + APP_HDR, 0, chunk);
+	if (len)
+		memcpy(buf + APP_HDR, file + off, len);
+	wr32(buf + n - 4, crc32_buf(buf, n - 4));
+}
+
 struct app_result {
 	int hdr_ok, crc_ok;
 	struct app_info info;
@@ -513,6 +530,7 @@ struct opts {
 	double duration_s;
 	double stats_s;
 	char log_prefix[200];
+	char tx_file[200];        /* TX: send this file in chunks instead of PRBS (see app_put_file) */
 	/* TX gain sweep */
 	int sweep;
 	double sw_from, sw_to, sw_step;
@@ -545,6 +563,7 @@ static void usage(void)
 	     "  --rate PPS         packet rate limit (default: as fast as the PHY gap allows)\n"
 	     "  --gap SAMPLES      minimum gap between frames in samples (default 16384)\n"
 	     "  --sweep FROM:TO:STEP:COUNT[:LOOPS]   TX gain sweep, COUNT packets per step (each step gets its own step_id)\n"
+	     "  --file PATH        send PATH in chunks (repeated) instead of PRBS: chunk index in step_id, file size in prbs_seed\n"
 	     "rx:\n"
 	     "  --rx-gain DB       manual RX gain (default 40)    --agc        slow-attack AGC instead of manual gain\n"
 	     "  --rmin N           detector energy gate           --gain-sh N  digital gain shift before the detector (-8..7)\n"
@@ -587,6 +606,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		else if (ARG("--gain")) o->tx_gain_db = atof(argv[++i]);
 		else if (ARG("--rate")) o->rate_pps = atof(argv[++i]);
 		else if (ARG("--gap")) o->gap_samples = strtoul(argv[++i], NULL, 0);
+		else if (ARG("--file")) snprintf(o->tx_file, sizeof o->tx_file, "%s", argv[++i]);
 		else if (ARG("--rx-gain")) o->rx_gain_db = atof(argv[++i]);
 		else if (!strcmp(a, "--agc")) o->rx_agc = 1;
 		else if (!strcmp(a, "--coded")) o->force_coded = 1;
@@ -952,6 +972,26 @@ static int run_tx(const struct opts *o)
 	if (!buf || !pay || !fp || !fs)
 		return 1;
 	write_meta(o, "tx");
+	uint8_t *fdata = NULL;
+	size_t fsize = 0, nchunks = 0;
+	if (o->tx_file[0]) {
+		FILE *ff = fopen(o->tx_file, "rb");
+		if (!ff) {
+			fprintf(stderr, "--file %s: %s\n", o->tx_file, strerror(errno));
+			return 1;
+		}
+		fseek(ff, 0, SEEK_END);
+		fsize = (size_t)ftell(ff);
+		fseek(ff, 0, SEEK_SET);
+		fdata = malloc(fsize ? fsize : 1);
+		if (!fdata || fread(fdata, 1, fsize, ff) != fsize) {
+			fprintf(stderr, "--file %s: read error\n", o->tx_file);
+			return 1;
+		}
+		fclose(ff);
+		nchunks = (fsize + (nbytes - APP_HDR - 4) - 1) / (nbytes - APP_HDR - 4);
+		printf("tx: file %s, %zu bytes, %zu chunks of %zu bytes, sent cyclically\n", o->tx_file, fsize, nchunks, nbytes - APP_HDR - 4);
+	}
 	printf("tx: nsyms %d (%zu bytes/packet, %zu DMA beats), gap %u samples, freq %.3f MHz, %s. Ctrl-C to stop.\n", o->nsyms, nbytes, beats,
 	       o->gap_samples, o->freq_hz / 1e6, o->sweep ? "gain sweep" : "fixed gain");
 
@@ -992,6 +1032,8 @@ static int run_tx(const struct opts *o)
 		}
 		uint32_t ms = (uint32_t)((now_s() - t0) * 1000.0);
 		app_build(pay, o->nsyms, (uint32_t)sent, o->run_seed, step_id, (int)lround(g * 100.0), freq_khz, ms);
+		if (fdata && nchunks)
+			app_put_file(pay, nbytes, fdata, fsize, (uint32_t)(sent % (long)nchunks));
 		memset(buf, 0, blk);
 		wr32(buf + 0, (uint32_t)nbytes);                        /* DMA beat 0: {OFTX magic, 0, nbytes} */
 		wr32(buf + 4, 0x4F465458u);

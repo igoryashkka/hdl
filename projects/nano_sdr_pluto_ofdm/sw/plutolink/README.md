@@ -56,7 +56,7 @@ Start the RX first. `--nsyms`, `--seed` and `--freq` must be identical on both s
 
 ```
 common  --freq HZ  --nsyms N(1..8)  --seed N  --log PREFIX  --stats SEC  --duration SEC  --count N  --no-rf
-tx      --gain DB  --rate PPS  --gap SAMPLES  --sweep FROM:TO:STEP:COUNT[:LOOPS]
+tx      --gain DB  --rate PPS  --gap SAMPLES  --sweep FROM:TO:STEP:COUNT[:LOOPS]  --file PATH  --mode 0|1
 rx      --rx-gain DB  --agc  --rmin N  --gain-sh N
 ```
 * `--gap` (TX, default 16384 samples ≈ 0.53 ms): the receiver handles one packet at a time; the TX wrapper enforces this gap.
@@ -106,3 +106,10 @@ register/DMA integration have **not yet run on a board**. Things most likely to 
 2. IIO DMA block / `tlast` behaviour of the stream (the parser resynchronises, `resync bytes` in the summary tells if it was needed),
 3. ADC sample format (the RX assumes the 12-bit value sign-extended in 16 bit; check `adc_peak` in the stats against the signal level),
 4. TX gain / RX gain ranges of your board and front end.
+
+## Additions (v0.9, Zynq-7020 LVDS board)
+
+* `--file PATH` (tx): sends the file in chunks instead of PRBS, cyclically; chunk index in `step_id`, file size in the PRBS seed field,
+  both CRC32 recomputed. Reassembly on the PC: `phy_sim/experiments/image_rx.py`.
+* Goodput: the rx 1 s line and the rx summary print Mbit/s of error-free payload; the tx summary prints the payload rate.
+* Board scripts for the LVDS Pluto (`projects/nano_sdr_pluto_ofdm_tx7020`): `bringup.ps1`, `tx.ps1`, `link_test.ps1`.

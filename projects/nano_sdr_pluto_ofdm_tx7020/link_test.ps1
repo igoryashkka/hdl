@@ -3,6 +3,7 @@
 #   .\link_test.ps1                                     MAX RANGE, 2 symbols, TX -60 dB, RX gain 30 dB, 2 M samples (65 ms)
 #   .\link_test.ps1 -Mode 1 -Gain -50 -RxGain 20
 #   .\link_test.ps1 -RxIp 192.168.3.1 -TxIp 192.168.2.1
+#   .\link_test.ps1 -Gain 0 -Nsyms 4 -Samples 3000000 -File .	est_image.png     send a picture, rebuild and compare it on the PC
 # Before: board A prepared with .\bringup.ps1; the two boards on different USB subnets (see README, "Two boards").
 # Cable + 30-60 dB attenuation between the boards.
 param(
@@ -17,6 +18,8 @@ param(
   [int]$Samples = 2000000,      # recorded samples (30.72 MS/s)
   [int]$GainSh = 4,             # digital gain 2^GainSh in front of the decoder's detector (its energy gate expects ADC rms ~ 300+)
   [string]$Name = "",
+  [string]$File = "",           # send this file (e.g. a picture) instead of PRBS; the PC reassembles it and compares
+
   [string]$Password = "analog"
 )
 $ErrorActionPreference = "Stop"
@@ -36,6 +39,13 @@ function Step($t) { Write-Host "`n== $t" -ForegroundColor Cyan }
 $txSeconds = [math]::Ceiling($Samples / 30.72e6) + 6
 $txLog = Join-Path $logs "${Name}_tx_console.txt"
 $txCmd = "cd /tmp && ./plutolink tx --freq $Freq --nsyms $Nsyms --mode $Mode --gain $Gain --rate $Rate --duration $txSeconds --log $Name"
+if ($File) {
+  $File = (Resolve-Path $File).Path        # absolute: the decoder runs from the phy_sim folder
+  $fname = Split-Path -Leaf $File
+  & scp -O @sshOpts $File "root@${TxIp}:/tmp/$fname"
+  if ($LASTEXITCODE -ne 0) { throw "copying $File to $TxIp failed" }
+  $txCmd += " --file /tmp/$fname"
+}
 Step "TX  root@${TxIp}: $txCmd"
 $tx = Start-Process -FilePath "ssh" -ArgumentList ($sshOpts + @("root@$TxIp", $txCmd)) -NoNewWindow -PassThru -RedirectStandardOutput $txLog -RedirectStandardError "$txLog.err"
 Start-Sleep -Seconds 3
@@ -69,6 +79,11 @@ Get-Content $txLog | Select-Object -Last 4
 Step "decoding (Python receiver, bit-exact models of the RTL)"
 Push-Location $phySim
 python experiments/decode_capture.py (Join-Path $logs "$Name.iq") --mode $Mode --nsyms $Nsyms --gain-sh $GainSh --out (Join-Path $logs "$Name.json")
+if ($File) {
+  Step "reassembling $File from the received packets"
+  $ext = [System.IO.Path]::GetExtension($File)
+  python experiments/image_rx.py (Join-Path $logs "$Name.iq") --mode $Mode --nsyms $Nsyms --gain-sh $GainSh --ref $File --out (Join-Path $logs "${Name}_received$ext")
+}
 Pop-Location
 Remove-Item $askpass -ErrorAction SilentlyContinue
 Write-Host "`nfiles: $logs\$Name.*" -ForegroundColor Green
