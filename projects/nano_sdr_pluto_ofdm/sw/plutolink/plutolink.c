@@ -677,6 +677,7 @@ static const char *STATS_HDR_TX =
  * ==================================================================================================================== */
 struct rx_acc {
 	uint64_t pkts, hdr_bad, crc_bad, lost, resync_bytes, bits, bit_errors, byte_errors, pkts_with_err;
+	uint64_t good_bits;     /* payload bits of packets received without any bit error (goodput) */
 	double evm_sum, rssi_sum, cfo_sum;
 	long n_meas;
 	long last_seq;
@@ -690,10 +691,10 @@ static void rx_stats_line(struct rx_acc *win, const struct hwstat *cur, const st
 	double clkmhz = dt > 0 ? (double)(uint32_t)(cur->w[4] - prev->w[4]) / dt / 1e6 : 0;
 	double rs = rssi_dbfs((uint16_t)(cur->w[7] & 0xFFFF));
 	double ber = win->bits ? (double)win->bit_errors / win->bits : 0;
-	printf("[%7.1fs] rx ok %4llu (hdr_bad %llu crc_bad %llu lost %llu) BER %.2e | EVM %5.2f%% SNR~%5.1f dB CFO %+7.0f Hz RSSI %6.1f dBFS | "
+	printf("[%7.1fs] rx ok %4llu (hdr_bad %llu crc_bad %llu lost %llu) goodput %6.2f Mbit/s BER %.2e | EVM %5.2f%% SNR~%5.1f dB CFO %+7.0f Hz RSSI %6.1f dBFS | "
 	       "det %u pkt %u drop %u wd %u peak %u/%u clip %u | fs %.3f MS/s clk %.2f MHz\n",
 	       cur->t - t0, (unsigned long long)win->pkts, (unsigned long long)win->hdr_bad, (unsigned long long)win->crc_bad,
-	       (unsigned long long)win->lost, ber, win->n_meas ? win->evm_sum / win->n_meas : 0.0,
+	       (unsigned long long)win->lost, dt > 0 ? (double)win->good_bits / dt / 1e6 : 0.0, ber, win->n_meas ? win->evm_sum / win->n_meas : 0.0,
 	       win->n_meas && win->evm_sum > 0 ? -20.0 * log10(win->evm_sum / win->n_meas / 100.0) : 0.0,
 	       win->n_meas ? win->cfo_sum / win->n_meas : 0.0, win->n_meas ? win->rssi_sum / win->n_meas : rs,
 	       cur->w[0] & 0xFFFF, cur->w[0] >> 16, cur->w[1] & 0xFFFF, cur->w[1] >> 16, cur->w[5] & 0xFFFF, cur->w[5] >> 16, cur->w[6], rate,
@@ -732,6 +733,7 @@ static void rx_handle(const struct phy_rec *r, const struct opts *o, struct rx_a
 		x[k]->bit_errors += ar.bit_errors;
 		x[k]->byte_errors += ar.byte_errors;
 		x[k]->pkts_with_err += (ar.bit_errors != 0);
+		x[k]->good_bits += (ar.crc_ok && ar.bit_errors == 0) ? ar.bits : 0;
 		x[k]->evm_sum += evm;
 		x[k]->rssi_sum += rs;
 		x[k]->cfo_sum += cfo;
@@ -870,6 +872,10 @@ static int run_rx(const struct opts *o)
 	printf("\n== rx summary ==\npackets %llu  hdr_bad %llu  crc_bad %llu  lost(seq gaps) %llu  resync bytes %llu\n",
 	       (unsigned long long)tot.pkts, (unsigned long long)tot.hdr_bad, (unsigned long long)tot.crc_bad,
 	       (unsigned long long)tot.lost, (unsigned long long)tot.resync_bytes);
+	{
+		double el = now_s() - t0;
+		printf("goodput %.3f Mbit/s over %.1f s (payload bits of error-free packets)\n", el > 0 ? (double)tot.good_bits / el / 1e6 : 0.0, el);
+	}
 	printf("bits %llu  bit errors %llu  BER %.3e  packets with errors %llu (PER %.3e)\n", (unsigned long long)tot.bits,
 	       (unsigned long long)tot.bit_errors, tot.bits ? (double)tot.bit_errors / tot.bits : 0.0, (unsigned long long)tot.pkts_with_err,
 	       tot.pkts ? (double)tot.pkts_with_err / tot.pkts : 0.0);
@@ -1015,7 +1021,8 @@ static int run_tx(const struct opts *o)
 	}
 	if (hw_snapshot(&cur) == 0)
 		tx_stats_line(&cur, &prev, t0, g, sent, fs);
-	printf("\n== tx summary ==\nsent %ld packets in %.1f s (%.1f pkt/s)\n", sent, now_s() - t0, sent / (now_s() - t0));
+	printf("\n== tx summary ==\nsent %ld packets in %.1f s (%.1f pkt/s, %.3f Mbit/s payload)\n", sent, now_s() - t0, sent / (now_s() - t0),
+	       (double)sent * (double)nbytes * 8.0 / (now_s() - t0) / 1e6);
 	fclose(fp);
 	fclose(fs);
 	stream_close(&st);
