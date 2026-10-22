@@ -20,6 +20,7 @@ $xsdb = "C:\AMDDesignTools\2025.2\Vivado\bin\xsdb.bat"
 $plutolink = Join-Path $here "..\nano_sdr_pluto_ofdm\sw\plutolink\plutolink"
 $target = "root@$Ip"
 $sshOpts = @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=$env:TEMP\pluto_known_hosts", "-o", "ConnectTimeout=10")   # the board's host key changes with every firmware
+Remove-Item "$env:TEMP\pluto_known_hosts" -ErrorAction SilentlyContinue   # boards change their host key with every boot / firmware
 
 # password without a prompt: ssh / scp run the SSH_ASKPASS program and read the password from its output
 $askpass = Join-Path $env:TEMP "pluto_askpass.cmd"

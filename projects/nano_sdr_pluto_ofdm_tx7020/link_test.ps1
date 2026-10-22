@@ -25,6 +25,7 @@ $logs = Join-Path $here "logs"
 New-Item -ItemType Directory -Force $logs | Out-Null
 if (-not $Name) { $Name = "link_" + (Get-Date -Format "yyyyMMdd_HHmmss") }
 $sshOpts = @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=$env:TEMP\pluto_known_hosts", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10")
+Remove-Item "$env:TEMP\pluto_known_hosts" -ErrorAction SilentlyContinue   # boards change their host key with every boot / firmware
 $askpass = Join-Path $env:TEMP "pluto_askpass.cmd"
 Set-Content -Path $askpass -Value "@echo $Password" -Encoding ASCII
 $env:SSH_ASKPASS = $askpass; $env:SSH_ASKPASS_REQUIRE = "force"; $env:DISPLAY = "dummy:0"
