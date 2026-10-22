@@ -15,6 +15,7 @@ param(
   [double]$Freq = 2450e6,
   [int]$Rate = 1000,            # packets per second (about 65 packets in a 65 ms recording)
   [int]$Samples = 2000000,      # recorded samples (30.72 MS/s)
+  [int]$GainSh = 4,             # digital gain 2^GainSh in front of the decoder's detector (its energy gate expects ADC rms ~ 300+)
   [string]$Name = "",
   [string]$Password = "analog"
 )
@@ -53,7 +54,7 @@ sleep 0.5
 echo "   fs `$(cat `$P/in_voltage_sampling_frequency)  LO `$(cat `$P/out_altvoltage0_RX_LO_frequency)  gain `$(cat `$P/in_voltage0_hardwaregain)  rssi `$(cat `$P/in_voltage0_rssi)"
 iio_readdev -b 1048576 -s $Samples cf-ad9361-lpc voltage0 voltage1 > /tmp/$Name.iq && ls -l /tmp/$Name.iq
 "@
-$rxScript | & ssh @sshOpts "root@$RxIp" "tr -d '\r' | sh"
+$rxScript | & ssh @sshOpts "root@$RxIp" "tr -d '\r\357\273\277' | sh"
 if ($LASTEXITCODE -ne 0) { throw "recording on $RxIp failed" }
 & scp -O @sshOpts "root@${RxIp}:/tmp/$Name.iq" $logs
 & ssh @sshOpts "root@$RxIp" "rm -f /tmp/$Name.iq"
@@ -67,7 +68,7 @@ Get-Content $txLog | Select-Object -Last 4
 # ---------------------------------------------------------------- 4. decoding on the PC
 Step "decoding (Python receiver, bit-exact models of the RTL)"
 Push-Location $phySim
-python experiments/decode_capture.py (Join-Path $logs "$Name.iq") --mode $Mode --nsyms $Nsyms --out (Join-Path $logs "$Name.json")
+python experiments/decode_capture.py (Join-Path $logs "$Name.iq") --mode $Mode --nsyms $Nsyms --gain-sh $GainSh --out (Join-Path $logs "$Name.json")
 Pop-Location
 Remove-Item $askpass -ErrorAction SilentlyContinue
 Write-Host "`nfiles: $logs\$Name.*" -ForegroundColor Green
