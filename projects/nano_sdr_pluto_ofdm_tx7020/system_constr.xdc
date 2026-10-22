@@ -66,9 +66,9 @@ set_property  -dict {PACKAGE_PIN  L14 IOSTANDARD LVCMOS25} [get_ports pl_spi_clk
 set_property  -dict {PACKAGE_PIN  N15 IOSTANDARD LVCMOS25} [get_ports pl_spi_miso]
 set_property  -dict {PACKAGE_PIN  N16 IOSTANDARD LVCMOS25} [get_ports pl_spi_mosi]
 
-# 8 ns: the PHY runs at 30.72 MS/s, l_clk = LVDS DATA_CLK <= 122.88 MHz (2R2T); the vendor 4 ns (250 MHz) covers 61.44 MS/s,
-# which this design does not support (the PHY TX closes at 8 ns, not at 4 ns)
-create_clock -period 8.000 -name rx_clk [get_ports rx_clk_in_p]
+# 4 ns as in projects/pluto: the AD9361 driver starts at 61.44 MS/s (l_clk = LVDS DATA_CLK 245.76 MHz) and tunes the LVDS interface
+# there, so axi_ad9361 / DMA must close at 4 ns (with 8 ns the tuning failed and the TX data reaching the AD9363 was corrupted).
+create_clock -period 4.000 -name rx_clk [get_ports rx_clk_in_p]
 
 create_clock -name clk_fpga_0 -period 10 [get_pins "i_system_wrapper/system_i/sys_ps7/inst/PS7_i/FCLKCLK[0]"]
 create_clock -name clk_fpga_1 -period  5 [get_pins "i_system_wrapper/system_i/sys_ps7/inst/PS7_i/FCLKCLK[1]"]
@@ -89,3 +89,10 @@ set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_false_path -to   [get_cells -hier -quiet -filter {NAME =~ *u_regs/*_s1_reg*}]
 set_false_path -from [get_cells -hier -quiet -filter {NAME =~ *u_regs/stat_bank_reg*}]
 set_false_path -from [get_cells -hier -quiet -filter {NAME =~ *u_regs/cfg_s2_reg*}]   ;# configuration is static while the PHY runs
+
+# ---- OFDM PHY TX: used only at 30.72 MS/s (l_clk 122.88 MHz in 2R2T), its paths get two l_clk periods (8 ns). At 61.44 MS/s the PHY
+# output is not selected by the DAC core (driver tuning uses its own patterns). The register block (u_regs, CPU clock) keeps one period.
+set_multicycle_path -setup 2 -from [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
+set_multicycle_path -hold  1 -from [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
+set_multicycle_path -setup 2 -to   [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
+set_multicycle_path -hold  1 -to   [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
