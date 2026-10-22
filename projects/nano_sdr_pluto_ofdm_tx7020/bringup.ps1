@@ -51,7 +51,7 @@ echo "-- plutolink diag"
 /tmp/plutolink diag
 '@
 # the script goes over stdin (PowerShell 5.1 mangles double quotes inside native arguments); carriage returns are stripped on the board
-$remote | & ssh @sshOpts $target "tr -d '' > /tmp/bringup.sh; sh /tmp/bringup.sh"
+$remote | & ssh @sshOpts $target "tr -d '\r' > /tmp/bringup.sh; sh /tmp/bringup.sh"
 if ($LASTEXITCODE -ne 0) { Write-Host "`nssh / diag returned $LASTEXITCODE" -ForegroundColor Yellow }
 
 Write-Host "`nNext (cable + 30-60 dB attenuation first):" -ForegroundColor Green
