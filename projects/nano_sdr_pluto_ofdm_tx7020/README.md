@@ -22,7 +22,7 @@
 build_vivado.bat                      (Vivado 2025.2, ≈ 1 год)
 vivado -mode batch -source post_reports.tcl     (звіти таймінгу й ресурсів)
 ```
-Бітстрім: `nano_sdr_pluto_ofdm_tx7020.runs/impl_1/system_top.bit` (стиснений, з відбитком USR_ACCESS).
+Бітстрім: `nano_sdr_pluto_ofdm_tx7020.runs/impl_1/system_top.bit` (стиснений).
 
 ## Запуск на платі (метод з `README_runtime_bitstream.md`: JTAG, до перезавантаження)
 
@@ -31,7 +31,7 @@ vivado -mode batch -source post_reports.tcl     (звіти таймінгу й 
    ```
    C:\AMDDesignTools\2025.2\Vivado\bin\xsdb.bat program_pl_jtag.tcl
    ```
-   Вивід `USR_ACCESS = 0x…` має збігатися з часом збірки.
+   Скрипт лише заливає PL. Що в PL саме цей бітстрім, перевіряє крок 5 (`plutolink diag` показує `PHY ID OFTX`).
 3. Перезавантажити драйвери AD9361:
    ```
    ssh root@192.168.2.1 "modprobe -r cf_axi_dds cf_axi_adc ad9361_drv ad9361 2>/dev/null; sleep 1; modprobe ad9361; sleep 2; ls /sys/bus/iio/devices/"
