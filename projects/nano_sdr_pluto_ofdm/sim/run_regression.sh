@@ -2,6 +2,7 @@
 # Regenerate golden vectors and run every block TB. Exit non-zero on any failure.
 cd "$(dirname "$0")/.." || exit 1
 python python/generate_vectors.py > /dev/null || exit 1
+python python/generate_vectors_bf.py > /dev/null || exit 1
 fail=0
 run() { # name [generic]
   if GENERIC="$2" sim/run_tb.sh "$1" > /tmp/tb_$1.log 2>&1; then echo "PASS $1 $2"; else echo "FAIL $1 $2"; cat /tmp/tb_$1.log; fail=1; fi
@@ -59,6 +60,14 @@ run tb_phy_rx_decode_ldpc MODE=0
 run tb_phy_regs_axil
 run tb_phy_rx_axis_top
 run tb_phy_tx_axis_top
+# beamforming (TestTask006): weights, tau tracking, two-channel TX, EPOCH, JP5 bus, two boards with the DAC streams checked bit-exact in python
+run tb_phy_tx_weight
+run tb_phy_tau_track
+run tb_phy_tx_top "CODED=1 MODE=0 BF=1"
+run tb_phy_epoch
+run tb_phy_syncbus
+run tb_phy_tx_axis_bf
+if python python/check_bf_axis.py > /tmp/tb_bfaxis.log 2>&1; then echo "PASS check_bf_axis (DAC streams of tb_phy_tx_axis_bf)"; else echo "FAIL check_bf_axis"; cat /tmp/tb_bfaxis.log; fail=1; fi
 # code-aided second pass (TestTask004 Patch B): phy_rx_top (UA + CA) in xsim against the fixed-point back-end model on the RTL's own tracker output
 if (cd phy_sim && python experiments/rtl_runs_rxenh.py --check) > /tmp/tb_rxenh.log 2>&1; then echo "PASS rxenh_rtl_check UA=1 CA=1"; else echo "FAIL rxenh_rtl_check"; cat /tmp/tb_rxenh.log; fail=1; fi
 exit $fail

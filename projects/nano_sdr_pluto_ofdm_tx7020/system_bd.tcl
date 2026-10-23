@@ -3,11 +3,12 @@
 ## Platform = projects/pluto of branch docs/pluto-runtime-bitstream-jtag (commit d206de1f9): PS7, axi_ad9361 (LVDS, 2R2T),
 ## RX path (decimator, cpack, ADC DMA @0x7C400000) unchanged so the vendor Linux device tree keeps working after a runtime
 ## (JTAG) bitstream load. Changed: the vendor TX path (interpolator, upack) is replaced by the PHY TX
-## (DAC DMA @0x7C420000, non-cyclic, -> phy_tx -> DAC channel 0), PHY registers @0x7C440000, debug ILA removed.
+## (DAC DMA @0x7C420000, non-cyclic, -> phy_tx (BF = 1: two weighted channels) -> DAC channels 0 and 1), PHY registers
+## @0x7C440000, JP5 board-to-board pins (EPOCH, SCLK, MOSI, UP: TestTask006 beamforming), debug ILA removed.
 ## PHY RTL is shared: ../nano_sdr_pluto_ofdm/rtl
 ###############################################################################
 set ofdm_rtl_dir [file normalize [file join [file dirname [file normalize [info script]]] .. nano_sdr_pluto_ofdm rtl]]
-foreach ofdm_f {common/phy_pkg.sv common/phy_ldpc_enc.sv common/phy_ldpc_pkg.sv common/phy_regs_axil.v common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv tx/phy_scrambler.sv tx/phy_hdr_gen.sv tx/phy_qam_mapper.sv tx/phy_interleaver.sv tx/phy_ofdm_mapper.sv tx/phy_pilot_insert.sv tx/phy_preamble_gen.sv tx/phy_ifft_2048.sv tx/phy_tx_scaler.sv tx/phy_cp_insert.sv tx/phy_tx_frame_ctrl.sv tx/phy_tx_top.sv tx/phy_tx_axis_top.v} {
+foreach ofdm_f {common/phy_pkg.sv common/phy_ldpc_enc.sv common/phy_ldpc_pkg.sv common/phy_regs_axil.v common/phy_fifo.sv common/phy_complex_mult.sv common/phy_fft_stage.sv common/phy_fft_core.sv tx/phy_scrambler.sv tx/phy_hdr_gen.sv tx/phy_qam_mapper.sv tx/phy_interleaver.sv tx/phy_ofdm_mapper.sv tx/phy_pilot_insert.sv tx/phy_preamble_gen.sv tx/phy_ifft_2048.sv tx/phy_tx_scaler.sv tx/phy_cp_insert.sv tx/phy_tx_frame_ctrl.sv tx/phy_tx_top.sv tx/phy_tx_axis_top.v common/phy_sincos.sv rx/phy_nco_mixer.sv tx/phy_tx_weight.sv tx/phy_tau_track.sv common/phy_epoch.sv common/phy_syncbus.sv} {
   add_files -norecurse [file join $ofdm_rtl_dir $ofdm_f]
 }
 set_property file_type SystemVerilog [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ *phy_*.sv}]
@@ -318,6 +319,7 @@ ad_connect rx_fir_decimator/active decim_slice/Dout
 
 # ---- OFDM PHY TX (RTL: rtl/tx/phy_tx_axis_top.v): PS -> DMA (mem->stream) -> PHY -> AD9361 DAC channel 0 ----
 create_bd_cell -type module -reference phy_tx_axis_top phy_tx
+set_property -dict [list CONFIG.BF {1}] [get_bd_cells phy_tx]
 ad_connect axi_ad9361/l_clk phy_tx/clk
 ad_connect axi_ad9361/rst phy_tx/rst
 ad_connect axi_ad9361_dac_dma/m_axis_valid phy_tx/s_axis_valid
@@ -329,12 +331,19 @@ ad_connect phy_tx/dac_data_i axi_ad9361/dac_data_i0
 ad_connect phy_tx/dac_data_q axi_ad9361/dac_data_q0
 ad_connect phy_tx/dac_dunf axi_ad9361/dac_dunf
 
-# unused DAC channel 1 (2R2T core): zero data
-ad_ip_instance xlconstant dac_zero
-ad_ip_parameter dac_zero CONFIG.CONST_WIDTH 16
-ad_ip_parameter dac_zero CONFIG.CONST_VAL 0
-ad_connect dac_zero/dout axi_ad9361/dac_data_i1
-ad_connect dac_zero/dout axi_ad9361/dac_data_q1
+# DAC channel 1 (2R2T core): second beamforming channel
+ad_connect phy_tx/dac_data_i1 axi_ad9361/dac_data_i1
+ad_connect phy_tx/dac_data_q1 axi_ad9361/dac_data_q1
+
+# JP5 board-to-board bus (IOBUFs in system_top.v)
+foreach jp {ep sclk mosi up} {
+  create_bd_port -dir I jp5_${jp}_i
+  create_bd_port -dir O jp5_${jp}_o
+  create_bd_port -dir O jp5_${jp}_t
+  ad_connect jp5_${jp}_i phy_tx/${jp}_i
+  ad_connect phy_tx/${jp}_o jp5_${jp}_o
+  ad_connect phy_tx/${jp}_t jp5_${jp}_t
+}
 
 ad_connect  axi_ad9361/l_clk axi_ad9361_adc_dma/fifo_wr_clk
 ad_connect  axi_ad9361/l_clk axi_ad9361_dac_dma/m_axis_aclk

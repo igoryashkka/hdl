@@ -96,3 +96,12 @@ set_multicycle_path -setup 2 -from [get_cells -hier -filter {NAME =~ *phy_tx/ins
 set_multicycle_path -hold  1 -from [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
 set_multicycle_path -setup 2 -to   [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
 set_multicycle_path -hold  1 -to   [get_cells -hier -filter {NAME =~ *phy_tx/inst/* && NAME !~ *phy_tx/inst/u_regs/*}]
+
+# ---- JP5 board-to-board bus (TestTask006): bank 13 (VCCO 3.3 V). All four are Hi-Z unless the role register drives them;
+# pull-ups keep the inputs defined with the cable unplugged. Asynchronous between boards (2-FF synchronisers in the PHY).
+set_property -dict {PACKAGE_PIN V10 IOSTANDARD LVCMOS33 PULLTYPE PULLUP} [get_ports jp5_epoch]
+set_property -dict {PACKAGE_PIN U9  IOSTANDARD LVCMOS33 PULLTYPE PULLUP} [get_ports jp5_sclk]
+set_property -dict {PACKAGE_PIN U10 IOSTANDARD LVCMOS33 PULLTYPE PULLUP} [get_ports jp5_mosi]
+set_property -dict {PACKAGE_PIN T9  IOSTANDARD LVCMOS33 PULLTYPE PULLUP} [get_ports jp5_up]
+set_false_path -from [get_ports {jp5_*}]
+set_false_path -to   [get_ports {jp5_*}]

@@ -21,7 +21,8 @@ module tb_rtl_tx_file #(
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
   phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .cfg_mode, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
-                  .underflow, .overflow, .pkt_trunc, .pkt_done, .busy);
+                  .underflow, .overflow, .pkt_trunc, .pkt_done, .busy,
+                  .go_en(1'b1), .go_fire(), .w_mode(4'd0), .w_amp(32'd0), .w_phase(32'd0), .w_tau(34'd0), .iq1_re(), .iq1_im());
 
   int fd, cyc = 0, t_first_byte = -1, t_last_byte = -1, t_p0_last_byte = -1, t_first_iq = -1, t_last_iq = -1, n_under = 0, n_done = 0;
   int idle_run = 0, zrun = 0, ph = 0;

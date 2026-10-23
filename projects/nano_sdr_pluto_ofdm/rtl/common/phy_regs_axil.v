@@ -4,10 +4,13 @@
 // Register map (byte offsets):
 //   0x00 ID        RO   module id (parameter ID)
 //   0x04 CTRL      RW   [0] soft reset of the PHY (level)   [1] clear statistics (write 1, self-clearing pulse)
+//                       [7:2] command pulses: write 1 -> one phy_clk pulse on pulse_o[bit-2] (toggle + 2-FF + edge, so a pulse
+//                       always comes after the configuration words written before it have settled in phy_clk)
 //   0x08 SNAP      RW   write any value -> latch all status words into the shadow bank (phy_clk domain);
 //                       read bit0 = 1 when the snapshot is complete (poll before reading 0x80..)
-//   0x10 + 4*i     RW   configuration words i = 0..NCFG-1 (reset value CFG_INIT[32*i +: 32]), passed to phy_clk through 2-FF
-//                       synchronisers (quasi-static: change them while the PHY is idle / in soft reset)
+//   0x10 + 4*i     RW   configuration words i = 0..min(NCFG,28)-1 (reset value CFG_INIT[32*i +: 32]), passed to phy_clk through 2-FF
+//                       synchronisers (quasi-static: change them while the PHY is idle / in soft reset, or follow them by a pulse)
+//   0x400 + 4*(i-28) RW configuration words i = 28..NCFG-1 (same as above)
 //   0x80 + 4*i     RO   status snapshot words i = 0..NST-1 (taken from stat_i on SNAP; stable between snapshots)
 // CDC: cfg / soft reset = 2-FF synchronisers; clear = toggle + 2-FF + edge; snapshot = request toggle -> phy_clk copy ->
 // acknowledge toggle -> s_axi_aclk (handshake, the bank is only written while no read is expected: C code polls SNAP first).
@@ -45,6 +48,7 @@ module phy_regs_axil #(
   output [32*NCFG-1:0]  cfg_o,       // phy_clk domain
   output                soft_rst_o,  // phy_clk domain, level
   output reg            clr_o,       // phy_clk domain, 1 clock pulse
+  output reg  [5:0]     pulse_o,     // phy_clk domain, command pulses (CTRL[7:2])
   input  [32*NST-1:0]   stat_i       // phy_clk domain, any (sampled on snapshot)
 );
   // ------------------------------------------------------------------ AXI domain registers
@@ -52,6 +56,7 @@ module phy_regs_axil #(
   reg               soft_rst_r;
   reg               clr_tog;
   reg               snap_req_tog;
+  reg  [5:0]        pul_tog;
   integer           i;
 
   // acknowledge from phy_clk (synchronised below)
@@ -61,13 +66,15 @@ module phy_regs_axil #(
 
   wire wr_fire = s_axi_awvalid && s_axi_wvalid && !s_axi_bvalid;
   wire [11:0] wa = s_axi_awaddr;
-  wire        w_cfg = (wa >= 12'h010) && (wa < 12'h010 + 4 * NCFG);
-  wire [11:0] w_cfg_idx = (wa - 12'h010) >> 2;
+  wire        w_cfg_lo = (wa >= 12'h010) && (wa < 12'h080) && (wa < 12'h010 + 4 * NCFG);
+  wire        w_cfg_hi = (NCFG > 28) && (wa >= 12'h400) && (wa < 12'h400 + 4 * (NCFG - 28));
+  wire        w_cfg = w_cfg_lo || w_cfg_hi;
+  wire [11:0] w_cfg_idx = w_cfg_hi ? ((wa - 12'h400) >> 2) + 12'd28 : (wa - 12'h010) >> 2;
 
   always @(posedge s_axi_aclk) begin
     if (!s_axi_aresetn) begin
       s_axi_awready <= 1'b0; s_axi_wready <= 1'b0; s_axi_bvalid <= 1'b0; s_axi_bresp <= 2'b00;
-      soft_rst_r <= 1'b0; clr_tog <= 1'b0; snap_req_tog <= 1'b0;
+      soft_rst_r <= 1'b0; clr_tog <= 1'b0; snap_req_tog <= 1'b0; pul_tog <= 6'd0;
       for (i = 0; i < NCFG; i = i + 1) cfg_r[i] <= CFG_INIT[32*i +: 32];
     end else begin
       s_axi_awready <= 1'b0; s_axi_wready <= 1'b0;
@@ -76,6 +83,7 @@ module phy_regs_axil #(
         if (wa == 12'h004) begin
           soft_rst_r <= s_axi_wdata[0];
           if (s_axi_wdata[1]) clr_tog <= ~clr_tog;
+          pul_tog <= pul_tog ^ s_axi_wdata[7:2];
         end else if (wa == 12'h008) begin
           if (!snap_pending) snap_req_tog <= ~snap_req_tog;
         end else if (w_cfg) begin
@@ -95,7 +103,8 @@ module phy_regs_axil #(
     if (ra == 12'h000) rd_mux = ID;
     else if (ra == 12'h004) rd_mux = {30'd0, 1'b0, soft_rst_r};
     else if (ra == 12'h008) rd_mux = {31'd0, ~snap_pending};
-    else if (ra >= 12'h010 && ra < 12'h010 + 4 * NCFG) rd_mux = cfg_r[(ra - 12'h010) >> 2];
+    else if (ra >= 12'h010 && ra < 12'h080 && ra < 12'h010 + 4 * NCFG) rd_mux = cfg_r[(ra - 12'h010) >> 2];
+    else if (NCFG > 28 && ra >= 12'h400 && ra < 12'h400 + 4 * (NCFG - 28)) rd_mux = cfg_r[((ra - 12'h400) >> 2) + 28];
     else if (ra >= 12'h080 && ra < 12'h080 + 4 * NST) rd_mux = stat_bank[32 * ((ra - 12'h080) >> 2) +: 32];
   end
 
@@ -116,6 +125,8 @@ module phy_regs_axil #(
   (* ASYNC_REG = "TRUE" *) reg               clr_s1, clr_s2;
   (* ASYNC_REG = "TRUE" *) reg               req_s1, req_s2;
   reg clr_s3, req_s3;
+  (* ASYNC_REG = "TRUE" *) reg [5:0] pul_s1, pul_s2;
+  reg [5:0] pul_s3;
   reg ack_tog;
   reg [32*NCFG-1:0] cfg_flat;
   always @* for (i = 0; i < NCFG; i = i + 1) cfg_flat[32*i +: 32] = cfg_r[i];
@@ -126,6 +137,8 @@ module phy_regs_axil #(
     clr_s1 <= clr_tog; clr_s2 <= clr_s1; clr_s3 <= clr_s2;
     req_s1 <= snap_req_tog; req_s2 <= req_s1; req_s3 <= req_s2;
     clr_o <= (clr_s2 != clr_s3);
+    pul_s1 <= pul_tog; pul_s2 <= pul_s1; pul_s3 <= pul_s2;
+    pulse_o <= pul_s2 ^ pul_s3;
     if (req_s2 != req_s3) begin
       stat_bank <= stat_i;
       ack_tog   <= ~ack_tog;
@@ -133,7 +146,7 @@ module phy_regs_axil #(
   end
   initial begin
     ack_tog = 1'b0; req_s1 = 1'b0; req_s2 = 1'b0; req_s3 = 1'b0; clr_s1 = 1'b0; clr_s2 = 1'b0; clr_s3 = 1'b0; clr_o = 1'b0;
-    rst_s1 = 1'b0; rst_s2 = 1'b0; cfg_s1 = {32*NCFG{1'b0}}; cfg_s2 = {32*NCFG{1'b0}}; stat_bank = {32*NST{1'b0}};
+    rst_s1 = 1'b0; rst_s2 = 1'b0; pul_s1 = 6'd0; pul_s2 = 6'd0; pul_s3 = 6'd0; pulse_o = 6'd0; cfg_s1 = {32*NCFG{1'b0}}; cfg_s2 = {32*NCFG{1'b0}}; stat_bank = {32*NST{1'b0}};
     ack_s1 = 1'b0; ack_s2 = 1'b0;
   end
 

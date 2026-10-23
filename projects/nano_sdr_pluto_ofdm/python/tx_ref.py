@@ -43,7 +43,20 @@ def tx_data_symbols(payload):
 
 
 def tx_frame(payload, gain=16384, mask=0x0FF, code="none", mode=1):
-    """Whole TX chain: bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top.
+    """Whole TX chain: bytes -> IQ samples (list of (re, im)), bit-exact model of phy_tx_top."""
+    from phy_params import FFT_SIZE, CP_LEN
+    n_log = FFT_SIZE.bit_length() - 1
+    out = []
+    for re, im in tx_frame_bins(payload, code=code, mode=mode):
+        rr, ri = ifft_raw(re, im, n_log, mask)
+        rr, ri = tx_scale(rr, gain), tx_scale(ri, gain)
+        cr, ci = cp_insert(rr, ri, n_log, CP_LEN)
+        out += [(int(a), int(b)) for a, b in zip(cr, ci)]
+    return out
+
+
+def tx_frame_bins(payload, code="none", mode=1):
+    """Frequency-domain symbols of one frame as fed to the IFFT (natural bin order): list of (re, im) int arrays.
     code "none": uncoded 16-QAM, 550 bytes per symbol, frame [sync][LTS][data...].
     code "ldpc": dual-mode PHY, frame [sync][LTS][header][data...]; mode 1 = MAX RATE (16-QAM, LDPC 5/6, 450 bytes per symbol),
     mode 0 = MAX RANGE (QPSK, LDPC 1/2, 135 bytes per symbol); the header symbol (QPSK, repetition coded) carries MODE_ID and nsyms."""
@@ -80,11 +93,4 @@ def tx_frame(payload, gain=16384, mask=0x0FF, code="none", mode=1):
         frames.append(ofdm_ref.insert_pilots(ofdm_ref.map_bins(hiq)))
     for s in range(nsym):
         frames.append(ofdm_ref.insert_pilots(ofdm_ref.map_bins(iq[s * NUM_DATA_SC:(s + 1) * NUM_DATA_SC])))
-    out = []
-    for fr in frames:
-        re = np.array([a for a, b in fr]); im = np.array([b for a, b in fr])
-        rr, ri = ifft_raw(re, im, n_log, mask)
-        rr, ri = tx_scale(rr, gain), tx_scale(ri, gain)
-        cr, ci = cp_insert(rr, ri, n_log, CP_LEN)
-        out += [(int(a), int(b)) for a, b in zip(cr, ci)]
-    return out
+    return [(np.array([a for a, b in fr], dtype=np.int64), np.array([b for a, b in fr], dtype=np.int64)) for fr in frames]

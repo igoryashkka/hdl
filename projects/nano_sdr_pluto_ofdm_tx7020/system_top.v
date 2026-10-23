@@ -90,7 +90,12 @@ module system_top (
 
   output          pl_spi_clk_o,
   output          pl_spi_mosi,
-  input           pl_spi_miso
+  input           pl_spi_miso,
+
+  inout           jp5_epoch,      // JP5-7  (V10, 3V3_IO1)  TestTask006 board-to-board bus
+  inout           jp5_sclk,       // JP5-9  (U9,  3V3_IO2)
+  inout           jp5_mosi,       // JP5-11 (U10, 3V3_IO3)
+  inout           jp5_up          // JP5-13 (T9,  3V3_IO4)
 );
 
   // internal signals
@@ -111,6 +116,15 @@ module system_top (
               gpio_en_agc,        // 12:12
               gpio_ctl,           // 11: 8
               gpio_status}));     //  7: 0
+
+  wire    [ 3:0]  jp5_i, jp5_o, jp5_t;
+  ad_iobuf #(
+    .DATA_WIDTH(4)
+  ) i_iobuf_jp5 (
+    .dio_t (jp5_t),
+    .dio_i (jp5_o),
+    .dio_o (jp5_i),
+    .dio_p ({jp5_up, jp5_mosi, jp5_sclk, jp5_epoch}));
 
   assign gpio_i[16:14] = gpio_o[16:14];
   assign gpio_i[17] = gpio_o[17];
@@ -176,6 +190,10 @@ module system_top (
     .tx_frame_out_n (tx_frame_out_n),
     .txnrx (txnrx),
     .up_enable (gpio_o[15]),
-    .up_txnrx (gpio_o[16]));
+    .up_txnrx (gpio_o[16]),
+    .jp5_ep_i (jp5_i[0]), .jp5_ep_o (jp5_o[0]), .jp5_ep_t (jp5_t[0]),
+    .jp5_sclk_i (jp5_i[1]), .jp5_sclk_o (jp5_o[1]), .jp5_sclk_t (jp5_t[1]),
+    .jp5_mosi_i (jp5_i[2]), .jp5_mosi_o (jp5_o[2]), .jp5_mosi_t (jp5_t[2]),
+    .jp5_up_i (jp5_i[3]), .jp5_up_o (jp5_o[3]), .jp5_up_t (jp5_t[3]));
 
 endmodule

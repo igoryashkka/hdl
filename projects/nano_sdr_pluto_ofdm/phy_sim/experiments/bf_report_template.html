@@ -1,0 +1,139 @@
+<title>Beamforming TX 7020</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+/*STYLE*/
+<style>td.t{white-space:normal;min-width:220px} .arch svg{width:100%;height:auto} .arch text{font-family:var(--sans);font-size:12px;fill:var(--ink)} .arch .box{fill:var(--surface);stroke:var(--line)} .arch .hot{stroke:var(--s1);stroke-width:2} .arch .wire{stroke:var(--s2);stroke-width:2;fill:none} .arch .air{stroke:var(--s3);stroke-width:1.5;fill:none;stroke-dasharray:5 4} .arch .fb{stroke:var(--s4);stroke-width:1.5;fill:none;stroke-dasharray:2 3} .arch .small{font-size:10.5px;fill:var(--muted)}</style>
+<div class="wrap">
+<header>
+  <div class="kicker">ТЗ 006 · гілка OFDM_PHY_Z7020_RXEN/BEAMFORM · phy_sim + xsim + Vivado (xc7z020) · beamd</div>
+  <h1>Програмне променеформування: 4 передавачі на двох платах, зв'язок лише через JP5</h1>
+  <p class="lead">Передавальний вузол з двох плат Zynq-7020 (по два канали TX), спільний час EPOCH і параметри по шині JP5, віддалений якір B вимірює канал від кожної антени і повертає ваги. Фаза, затримка й частота плат вирівнюються програмно: спільної опорної і спільного гетеродина немає.</p>
+  <div class="banner" id="banner"></div>
+  <div class="stats" id="stats"></div>
+</header>
+<nav class="idx" id="idx"></nav>
+
+<section id="s1"><h2><span class="n">1</span>Етапи і статус</h2><p class="sub">Критерії з розділу 8 ТЗ. Етапи, що потребують заліза, лише підготовлені: на момент звіту плати не були підключені.</p><div class="card scroll" id="ms_tbl"></div></section>
+<section id="s2"><h2><span class="n">2</span>Архітектура</h2><div class="card arch" id="arch"></div><div class="grid2" style="margin-top:14px"><div class="card scroll" id="epoch_tbl"></div><div class="card"><h3>Ключові рішення</h3><ul class="plain" id="dec_list" style="margin-top:8px"></ul></div></div></section>
+<section id="s3"><h2><span class="n">3</span>Замкнений контур: епоха і фазовий шум гетеродина</h2><p class="sub" id="grid_sub"></p><div class="grid2"><div class="card chart" id="ch_loss"></div><div class="card chart" id="ch_perr"></div></div><div class="card scroll" id="grid_tbl" style="margin-top:14px"></div></section>
+<section id="s4"><h2><span class="n">4</span>SNR, затримка і втрати зворотного зв'язку</h2><div class="grid2"><div class="card chart" id="ch_snr"></div><div class="card chart" id="ch_trace"></div></div><div class="card scroll" id="fb_tbl" style="margin-top:14px"></div></section>
+<section id="s5"><h2><span class="n">5</span>Оцінювач якоря</h2><p class="sub">Один пакет зондування (sync, LTS, заголовок, 1 символ), випадкові затримка, фаза і CFO ±3 кГц, 60 пакетів на точку. Похибки відносно істини, Python-еталон; C-версія (<code>beamd</code>) збігається з ним до 1e-6.</p><div class="card scroll" id="est_tbl"></div></section>
+<section id="s6"><h2><span class="n">6</span>Перевірка RTL і ПЗ</h2><p class="sub" id="rtl_sub"></p><div class="card scroll" id="rtl_tbl"></div><div class="card scroll" id="reg_tbl" style="margin-top:14px"></div></section>
+<section id="s7"><h2><span class="n">7</span>Ресурси і таймінг</h2><p class="sub" id="res_sub"></p><div class="card scroll" id="res_tbl"></div></section>
+<section id="s8"><h2><span class="n">8</span>Відхилення від ТЗ, ризики, що далі</h2><div class="grid2"><div class="card"><h3>Відхилення і уточнення</h3><ul class="plain" id="dev_list" style="margin-top:8px"></ul></div><div class="card"><h3>Ризики і невідоме</h3><ul class="plain" id="risk_list" style="margin-top:8px"></ul></div></div><details style="margin-top:12px"><summary>Відтворення</summary><ul class="plain" style="margin-top:10px" id="repro"></ul></details></section>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = /*DATA*/null;
+const $ = (s,r=document)=>r.querySelector(s);
+const f1 = v => v==null||isNaN(v)?'–':v.toFixed(1), f2 = v => v==null||isNaN(v)?'–':v.toFixed(2), f3 = v => v==null||isNaN(v)?'–':v.toFixed(3);
+const num = v => v==null?'–':Math.round(v).toLocaleString('uk-UA');
+const L = DATA.loop, G = L.grid, LW = Object.keys(G).sort((a,b)=>a-b), EP = Object.keys(G[LW[0]]).sort((a,b)=>a-b);
+const COLS = ['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)'];
+
+function xyChart(host,o){
+  const W=520,H=o.h||250,m={l:50,r:12,t:10,b:o.xlabel?38:26},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const all=o.series.flatMap(s=>s.pts.filter(p=>p.y!=null&&!isNaN(p.y)).map(p=>p.x));const x0=o.x0??Math.min(...all),x1=o.x1??Math.max(...all);
+  const ymax=o.ymax,ymin=o.ymin||0;
+  const lx=v=>o.logx?Math.log10(v):v;
+  const X=x=>m.l+(lx(x1)>lx(x0)?(lx(x)-lx(x0))/(lx(x1)-lx(x0)):.5)*iw;
+  const Y=v=>m.t+ih-((Math.min(Math.max(v,ymin),ymax)-ymin)/(ymax-ymin))*ih;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${o.title}">`;
+  o.yticks.forEach(t=>{s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(t)}" y2="${Y(t)}" style="stroke:var(--grid)"/><text class="ax" x="${m.l-6}" y="${Y(t)+4}" text-anchor="end">${o.yfmt(t)}</text>`});
+  (o.hlines||[]).forEach(h=>{s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(h.y)}" y2="${Y(h.y)}" style="stroke:var(--muted)" stroke-dasharray="4 4"/><text class="ax" x="${W-m.r}" y="${Y(h.y)-4}" text-anchor="end">${h.label}</text>`});
+  o.xticks.forEach(x=>{s+=`<text class="ax" x="${X(x)}" y="${H-m.b+15}" text-anchor="middle">${o.xfmt?o.xfmt(x):x}</text>`});
+  if(o.xlabel)s+=`<text class="axl" x="${m.l+iw/2}" y="${H-3}" text-anchor="middle">${o.xlabel}</text>`;
+  o.series.forEach(se=>{
+    let d='',pen=false;se.pts.forEach(p=>{if(p.y==null||isNaN(p.y)){pen=false;return}d+=(pen?'L':'M')+X(p.x).toFixed(1)+' '+Y(p.y).toFixed(1)+' ';pen=true});
+    s+=`<path d="${d}" fill="none" style="stroke:${se.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    if(!o.nodots)se.pts.forEach(p=>{if(p.y!=null&&!isNaN(p.y))s+=`<circle cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="2.8" style="fill:${se.color};stroke:var(--surface)" stroke-width="1.4"/>`});
+  });
+  s+=`<line class="cx" x1="0" x2="0" y1="${m.t}" y2="${m.t+ih}" style="stroke:var(--muted)" opacity="0"/><rect class="hit" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  host.innerHTML=`<div class="ttl"><h3>${o.title}</h3><small>${o.note||''}</small></div>`+(o.series.length>1?`<div class="legend">${o.series.map(se=>`<span><i style="background:${se.color}"></i>${se.name}</span>`).join('')}</div>`:'')+s;
+  const svg=$('svg',host),hit=$('.hit',host),cx=$('.cx',host),tip=$('#tip');
+  hit.addEventListener('mousemove',ev=>{
+    const r=svg.getBoundingClientRect(),px=(ev.clientX-r.left)/r.width*W;
+    const rows=o.series.map(se=>{let bp=null,bd=1e9;se.pts.forEach(p=>{if(p.y==null||isNaN(p.y))return;const d=Math.abs(X(p.x)-px);if(d<bd){bd=d;bp=p}});return bp&&bd<40?[se,bp]:null}).filter(Boolean);
+    if(!rows.length){tip.style.display='none';return}
+    cx.setAttribute('x1',X(rows[0][1].x));cx.setAttribute('x2',X(rows[0][1].x));cx.setAttribute('opacity',1);
+    tip.innerHTML=`<b>${o.tipx(rows[0][1].x)}</b>`+rows.map(([se,p])=>`<div><span><i style="background:${se.color}"></i>${se.name}</span><b>${o.vfmt(p.y)}</b></div>`).join('');
+    tip.style.display='block';tip.style.position='absolute';let tx=ev.clientX+14;if(tx+250>window.innerWidth)tx=ev.clientX-250;tip.style.left=tx+'px';tip.style.top=(ev.clientY+14+window.scrollY)+'px';
+  });
+  hit.addEventListener('mouseleave',()=>{cx.setAttribute('opacity',0);tip.style.display='none'});
+}
+const tbl=(head,rows)=>'<table><thead><tr>'+head.map((h,i)=>`<th class="${i?'n':''}">${h}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>`<tr${r.hl?' class="hl"':''}>`+r.map((c,i)=>`<td class="${i?(typeof c==='string'&&c.length>40?'t':'n'):''}">${c}</td>`).join('')+'</tr>').join('')+'</tbody></table>';
+const pill=(ok,a,b)=>`<span class="pill ${ok===true?'good':ok===false?'bad':'warn'}">${ok===true?(a||'так'):ok===false?(b||'ні'):(a||'частково')}</span>`;
+
+/* ---------- hero ---------- */
+const g10=G['0.01']&&G['0.01']['10'], g10b=G['0.1']&&G['0.1']['10'];
+const regP=DATA.regression.filter(r=>r.pass).length, regN=DATA.regression.length;
+$('#banner').innerHTML='Усе нижче отримано в симуляції (Python-моделі, xsim) і з Vivado. На залізі променеформування ще не вимірювалось: на момент звіту плати не були підключені, а шину JP5 ще не зібрано. Етапи M1–M5 підготовлені (бітстрім, <code>beamd</code>, скрипти), вимірювання виграшу й діаграми потрібні окремо. Передумова M0 (рішення за ТЗ 005) не виконана: оцінки кварців тут параметричні.';
+$('#stats').innerHTML=[
+  [g10?f2(g10.loss_db_mean)+' дБ':'–','середня втрата виграшу решітки 4 антен (епоха 10 мс, ширина лінії гетеродина 0.01 Гц, SNR зондування 20 дБ); ідеал +6.0 дБ при тій самій сумарній потужності'],
+  [g10?f1(g10.perr_rms_deg)+'°':'–','залишкова фазова похибка антен відносно антени 0 (rms по смузі і епохах) у тому ж сценарії; ціль ТЗ ≤ 10°'],
+  [regN?regP+' / '+regN:'–','тестів регресії пройдено (включно з 8 новими: ваги, τ, 2 канали, EPOCH, шина JP5, дві плати з бітовою перевіркою потоків ЦАП)'],
+  [DATA.impl&&DATA.impl.total?num(DATA.impl.total.lut)+' LUT':'–','повний проєкт TX з BF на xc7z020'+(DATA.impl&&DATA.impl.timing&&DATA.impl.timing.wns!=null?', WNS '+(DATA.impl.timing.wns>=0?'+':'')+DATA.impl.timing.wns.toFixed(3)+' нс':'')]
+].map(a=>`<div class="stat"><b>${a[0]}</b><span>${a[1]}</span></div>`).join('');
+const SEC=['Етапи','Архітектура','Контур','SNR і зв\'язок','Оцінювач','Перевірка','Ресурси','Відхилення'];
+$('#idx').innerHTML=SEC.map((s,i)=>`<a href="#s${i+1}">${i+1} ${s}</a>`).join('');
+
+/* ---------- 1 milestones ---------- */
+$('#ms_tbl').innerHTML=tbl(['Етап','Критерій ТЗ','Що зроблено','Статус'],DATA.milestones.map(m=>[m.id,m.crit,m.done,pill(m.ok,m.okt,m.badt)]));
+
+/* ---------- 2 architecture ---------- */
+$('#arch').innerHTML=`<svg viewBox="0 0 900 270">
+ <rect class="box hot" x="20" y="30" width="230" height="150" rx="8"/><text x="35" y="52" font-weight="600">A1 (ведуча) · Zynq-7020</text>
+ <text x="35" y="74" class="small">phy_tx_axis_top BF=1: ваги по піднесучих,</text><text x="35" y="90" class="small">NCO, τ-трекер, EPOCH-генератор, шина</text>
+ <text x="35" y="112" class="small">beamd leader: розклад S0 S1 D, commit,</text><text x="35" y="128" class="small">кадр PARAMS для A2</text><text x="35" y="160">TX1 · TX2</text>
+ <rect class="box hot" x="20" y="200" width="230" height="56" rx="8"/><text x="35" y="222" font-weight="600">A2 (ведена) · Zynq-7020</text><text x="35" y="242" class="small">beamd follower: S2 S3 D, параметри по JP5</text>
+ <path class="wire" d="M135 180 L135 200"/><text x="145" y="194" class="small">JP5: EPOCH SCLK MOSI UP GND</text>
+ <path class="air" d="M250 150 C 420 150, 470 120, 640 120"/><path class="air" d="M250 230 C 420 230, 470 150, 640 140"/>
+ <text x="400" y="104" class="small">зондування по слотах + дані (ефір, 2450 МГц)</text>
+ <rect class="box hot" x="640" y="60" width="240" height="120" rx="8"/><text x="655" y="82" font-weight="600">B (якір) · штатний бітстрім</text>
+ <text x="655" y="104" class="small">beamd anchor: запис IQ, пошук пакетів,</text><text x="655" y="120" class="small">H(k), затримка, фаза, CFO; Калман;</text><text x="655" y="136" class="small">ваги, τ, ρ, NCO на епоху e + D</text>
+ <path class="fb" d="M640 170 C 480 250, 380 60, 250 60"/><text x="420" y="246" class="small">зворотний зв'язок: UDP через ПК (M1–M3) або DBPSK-сплеск 2470 МГц (M4)</text>
+</svg>`;
+$('#epoch_tbl').innerHTML='<h3>Розклад епохи (10 мс = 307200 відліків)</h3>'+tbl(['Пакет','Канал','Індекс після тіку'],[['S0','A1 TX1','1000'],['S1','A1 TX2','13000 + 64·(e mod 8)'],['S2','A2 TX1','27000'],['S3','A2 TX2','43000'],['D','усі 4','60000']]);
+$('#dec_list').innerHTML=DATA.decisions.map(d=>`<li>${d}</li>`).join('');
+
+/* ---------- 3 loop grid ---------- */
+$('#grid_sub').innerHTML=`Модель: зсув кварців ±2 ppm (=±4.9 кГц на 2.45 ГГц), дрейф 0.5 Гц/с, випадкове блукання частоти 0.5 Гц/√с, частота дискретизації від того ж кварцу, фазовий шум гетеродина Вінера з шириною лінії lw (структурна функція фази D(τ) = 2π·lw·τ на плату), джитер прийому EPOCH ±1/8 відліку, зворотний зв'язок через 2 епохи, SNR зондування 20 дБ, MRT. Виграш при тій самій сумарній потужності, 4 антени: ідеал ${f2(g10?g10.ideal_db:null)} дБ. Середнє по 3 запускам, епохи після збіжності (від 30-ї).`;
+const ser=(key)=>LW.map((lw,i)=>({name:'lw '+lw+' Гц',color:COLS[i%6],pts:EP.map(e=>({x:+e,y:G[lw][e][key]}))}));
+xyChart($('#ch_loss'),{title:'Втрата виграшу решітки',note:'дБ від ідеалу',series:ser('loss_db_mean'),ymax:2,yticks:[0,0.5,1,1.5,2],yfmt:v=>v.toFixed(1),xticks:EP.map(Number),logx:true,xlabel:'епоха, мс',tipx:x=>'епоха '+x+' мс',vfmt:v=>f2(v)+' дБ'});
+xyChart($('#ch_perr'),{title:'Залишкова фазова похибка',note:'rms по смузі, антени 1–3',series:ser('perr_rms_deg'),ymax:60,yticks:[0,15,30,45,60],yfmt:v=>v+'°',xticks:EP.map(Number),logx:true,xlabel:'епоха, мс',hlines:[{y:10,label:'ціль 10°'}],tipx:x=>'епоха '+x+' мс',vfmt:v=>f1(v)+'°'});
+$('#grid_tbl').innerHTML=tbl(['ширина лінії, Гц'].concat(EP.map(e=>e+' мс')),LW.map(lw=>[lw].concat(EP.map(e=>{const r=G[lw][e];return f2(r.loss_db_mean)+' дБ · '+f1(r.perr_rms_deg)+'°'}))));
+
+/* ---------- 4 SNR, trace, feedback ---------- */
+const S=L.snr||{}, SK=Object.keys(S).map(Number).sort((a,b)=>a-b);
+xyChart($('#ch_snr'),{title:'SNR зондування',note:'епоха 10 мс, lw 0.01 Гц; на 0 дБ пакети не виявляються',series:[{name:'втрата, дБ',color:COLS[0],pts:SK.map(k=>({x:k,y:S[k].loss_db_mean}))},{name:'p95 втрати, дБ',color:COLS[1],pts:SK.map(k=>({x:k,y:S[k].loss_db_p95}))}],ymax:3,yticks:[0,1,2,3],yfmt:v=>v.toFixed(0),xticks:SK,xlabel:'SNR на відлік, дБ',tipx:x=>'SNR '+x+' дБ',vfmt:v=>f2(v)+' дБ'});
+const T=L.trace||[];
+xyChart($('#ch_trace'),{title:'Збіжність контуру',note:'один запуск, lw 0.01 Гц, 10 мс; втрата виграшу по епохах',series:[{name:'втрата',color:COLS[0],pts:T.map(t=>({x:t.k,y:t.loss_db}))}],nodots:true,ymax:3,yticks:[0,1,2,3],yfmt:v=>v.toFixed(0),xticks:[0,25,50,75,100,125,150].filter(x=>x<=(T.length?T[T.length-1].k:0)),xlabel:'епоха',tipx:x=>'епоха '+x,vfmt:v=>f2(v)+' дБ'});
+const D=L.delay||{}, FL=L.fb_loss||{};
+$('#fb_tbl').innerHTML=tbl(['Умова (lw 0.01 Гц, 10 мс, SNR 20 дБ)','втрата, дБ','p95, дБ','фаза rms'],
+  Object.keys(D).map(k=>['зворотний зв\'язок через '+k+' епох'+(k==='2'?' (типово)':''),f2(D[k].loss_db_mean),f2(D[k].loss_db_p95),f1(D[k].perr_rms_deg)+'°'])
+  .concat(Object.keys(FL).map(k=>['втрата '+Math.round(k*100)+' % повідомлень зворотного зв\'язку',f2(FL[k].loss_db_mean),f2(FL[k].loss_db_p95),f1(FL[k].perr_rms_deg)+'°']))
+  .concat(L.equal_gain&&L.equal_gain.loss_db_mean!=null?[['рівні амплітуди замість MRT (відносно ідеалу рівних)',f2(L.equal_gain.loss_db_mean),f2(L.equal_gain.loss_db_p95),f1(L.equal_gain.perr_rms_deg)+'°']]:[]));
+
+/* ---------- 5 estimator ---------- */
+$('#est_tbl').innerHTML=tbl(['SNR на відлік','виявлено','затримка: зсув / σ, відліків','фаза σ','CFO σ (груба)'],DATA.est.map(r=>[r.snr+' дБ',r.det+' / '+r.n,r.n_ok?(r.d_mean.toFixed(4)+' / '+r.d_std.toFixed(4)):'–',r.n_ok?f2(r.ph_std)+'°':'–',r.n_ok?f1(r.f_std)+' Гц':'–']));
+
+/* ---------- 6 verification ---------- */
+$('#rtl_sub').innerHTML='Кожен новий блок має Python-еталон (<code>python/bf_ref.py</code>, <code>python/bf_anchor.py</code>) і самоперевірний TB або перевірку проти еталона.';
+$('#rtl_tbl').innerHTML=tbl(['Перевірка','Що перевіряє','Результат'],DATA.checks.map(c=>[`<code>${c.name}</code>`,c.what,pill(c.pass,c.res||'пройдено','не пройдено')]));
+const fails=DATA.regression.filter(r=>!r.pass);
+$('#reg_tbl').innerHTML='<h3>Регресія sim/run_regression.sh: '+regP+' / '+regN+' пройдено</h3>'+(fails.length?'<p class="sub">Не пройшли: '+fails.map(f=>'<code>'+f.name+' '+f.generic+'</code>').join(', ')+'</p>':'<p class="sub">Усі тести пройшли.</p>');
+
+/* ---------- 7 resources ---------- */
+const IM=DATA.impl;
+$('#res_sub').innerHTML=IM&&IM.total?'Повна імплементація проєкту <code>nano_sdr_pluto_ofdm_tx7020</code> (xc7z020clg400-2, Vivado 2025.2). Інтерфейс AD936x 4 нс, логіка PHY multicycle 2 (працює на l_clk 122.88 МГц).':'Звіти збірки відсутні.';
+const R0=DATA.impl_prev;
+$('#res_tbl').innerHTML=IM&&IM.total?tbl(['','LUT','FF','BRAM','DSP','WNS, нс','WHS, нс'],[
+  ...(R0?[['v0.9.3: один канал TX',num(R0.lut),num(R0.ff),f1(R0.bram),num(R0.dsp),R0.wns!=null?f3(R0.wns):'–',R0.whs!=null?f3(R0.whs):'–']]:[]),
+  Object.assign(['v0.10.0: BF (2 канали, ваги, NCO, EPOCH, шина)',num(IM.total.lut),num(IM.total.ff),f1(IM.total.bram),num(IM.total.dsp),IM.timing.wns!=null?f3(IM.timing.wns):'–',IM.timing.whs!=null?f3(IM.timing.whs):'–'],{hl:true}),
+  ...(R0?[['різниця (бюджет ТЗ: +10 тис. LUT, +60 DSP)','+'+num(IM.total.lut-R0.lut),'+'+num(IM.total.ff-R0.ff),'+'+f1(IM.total.bram-R0.bram),'+'+num(IM.total.dsp-R0.dsp),'','']]:[])]):'';
+
+/* ---------- 8 deviations ---------- */
+$('#dev_list').innerHTML=DATA.deviations.map(d=>`<li>${d}</li>`).join('');
+$('#risk_list').innerHTML=DATA.risks.map(d=>`<li>${d}</li>`).join('');
+$('#repro').innerHTML=DATA.repro.map(d=>`<li>${d}</li>`).join('');
+</script>

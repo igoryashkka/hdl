@@ -11,13 +11,18 @@
 // Timing contract: after a packet is complete, the first sample is available after ~2 symbol compute times; samples of one
 //   frame are then continuous at the pull rate (credit logic in phy_tx_frame_ctrl guarantees banks are filled in time as
 //   long as the processing clock is >= 2x the sample rate).
-// Golden: python/tx_ref.py::tx_frame (whole chain, bit-exact incl. fixed-point IFFT, scaling and CP).
+// BF = 1 (beamforming, TestTask006): two output channels sharing everything up to the IFFT input mux; per channel
+//   phy_tx_weight (mode/amp/phase/tau latched at the packet start, go_fire) -> IFFT -> scaler -> CP buffer. Both channels run
+//   in lock-step (same latency), channel 0 drives the frame control. go_en gates the packet start (timed launch).
+// Golden: python/tx_ref.py::tx_frame (whole chain, bit-exact incl. fixed-point IFFT, scaling and CP);
+//   BF = 1: python/bf_ref.py::tx_frame_bf.
 module phy_tx_top
   import phy_pkg::*;
 #(
   parameter int MAX_SYMS   = TX_MAX_SYMS,
   parameter int SHIFT_MASK = 32'h0FF,
-  parameter bit CODED      = 1'b0            // 1: LDPC R=5/6 (450 payload bytes per OFDM symbol), 0: uncoded (550)
+  parameter bit CODED      = 1'b0,           // 1: LDPC R=5/6 (450 payload bytes per OFDM symbol), 0: uncoded (550)
+  parameter bit BF         = 1'b0            // 1: two weighted output channels (beamforming)
 ) (
   input  logic                   clk,
   input  logic                   rst,
@@ -38,7 +43,16 @@ module phy_tx_top
   output logic                   overflow,
   output logic                   pkt_trunc,
   output logic                   pkt_done,
-  output logic                   busy
+  output logic                   busy,
+  // beamforming (BF = 1; ignored otherwise)
+  input  logic                   go_en,          // packet start allowed (timed launch), 1 = immediately
+  output logic                   go_fire,        // packet start pulse (weights are latched here)
+  input  logic [3:0]             w_mode,         // {ch1, ch0}: 0 bypass, 1 weight, 2 mute
+  input  logic [31:0]            w_amp,          // {ch1, ch0} Q1.15
+  input  logic [31:0]            w_phase,        // {ch1, ch0} 2^16 = 2*pi
+  input  logic [33:0]            w_tau,          // {ch1, ch0} signed 17 bit, 1/256 sample (> 0 advances)
+  output logic signed [IQ_W-1:0] iq1_re,
+  output logic signed [IQ_W-1:0] iq1_im
 );
   localparam int BUF_BYTES = MAX_SYMS * BYTES_PER_OFDM;
   localparam int BAW       = $clog2(BUF_BYTES);
@@ -92,7 +106,7 @@ module phy_tx_top
 
   // the reader starts together with the controller (go handshake); `started_pkt` marks the packet as taken
   logic pkt_taken;
-  assign go_valid = pkt_valid && !pkt_taken;
+  assign go_valid = pkt_valid && !pkt_taken && (go_en || !BF);
 
   phy_tx_frame_ctrl u_ctrl (
     .clk, .rst,
@@ -193,7 +207,7 @@ module phy_tx_top
   logic [2*IQ_W-1:0]      qf_rd_data;
   logic [3:0]             qf_count;
 
-  logic                   hdr_pend, hdr_busy, hdr_busy_q, hdr_valid, go_fire;
+  logic                   hdr_pend, hdr_busy, hdr_busy_q, hdr_valid;
   logic signed [IQ_W-1:0] hdr_i, hdr_q;
   assign go_fire = go_valid && go_ready;
   assign il_out_ready = (qf_count <= 4'd5) && !(CODED && hdr_pend);
@@ -267,26 +281,66 @@ module phy_tx_top
   wire signed [IQ_W-1:0] ff_im    = pr_valid ? pr_im : pi_valid ? pi_im : '0;
   assign sym_end = (pr_valid & pr_last) | (pi_valid & pi_last);
 
-  logic                   if_valid, sc_valid;
-  logic signed [IQ_W-1:0] if_re, if_im, sc_re, sc_im;
-  phy_ifft_2048 #(.SHIFT_MASK(SHIFT_MASK)) u_ifft (
-    .clk, .rst(rst | fft_rst), .in_valid(ff_valid), .in_re(ff_re), .in_im(ff_im),
-    .out_valid(if_valid), .out_re(if_re), .out_im(if_im)
-  );
-
-  phy_tx_scaler u_scale (
-    .clk, .rst, .gain, .in_valid(if_valid), .in_re(if_re), .in_im(if_im),
-    .out_valid(sc_valid), .out_re(sc_re), .out_im(sc_im)
-  );
-
-  // ===================================================================== CP insert / reorder buffer -> IQ out
   logic                   cp_valid, cp_first, cp_last, frame_ok;
   logic signed [IQ_W-1:0] cp_re, cp_im;
-  phy_cp_insert u_cp (
-    .clk, .rst, .in_valid(sc_valid), .in_re(sc_re), .in_im(sc_im),
-    .frame_ok, .frame_written, .sym_done, .overflow,
-    .out_valid(cp_valid), .out_ready(iq_pull), .out_re(cp_re), .out_im(cp_im), .out_first(cp_first), .out_last(cp_last)
-  );
+  if (!BF) begin : g_one
+    logic                   if_valid, sc_valid;
+    logic signed [IQ_W-1:0] if_re, if_im, sc_re, sc_im;
+    phy_ifft_2048 #(.SHIFT_MASK(SHIFT_MASK)) u_ifft (
+      .clk, .rst(rst | fft_rst), .in_valid(ff_valid), .in_re(ff_re), .in_im(ff_im),
+      .out_valid(if_valid), .out_re(if_re), .out_im(if_im)
+    );
+
+    phy_tx_scaler u_scale (
+      .clk, .rst, .gain, .in_valid(if_valid), .in_re(if_re), .in_im(if_im),
+      .out_valid(sc_valid), .out_re(sc_re), .out_im(sc_im)
+    );
+
+    // ===================================================================== CP insert / reorder buffer -> IQ out
+    phy_cp_insert u_cp (
+      .clk, .rst, .in_valid(sc_valid), .in_re(sc_re), .in_im(sc_im),
+      .frame_ok, .frame_written, .sym_done, .overflow,
+      .out_valid(cp_valid), .out_ready(iq_pull), .out_re(cp_re), .out_im(cp_im), .out_first(cp_first), .out_last(cp_last)
+    );
+    assign iq1_re = '0;
+    assign iq1_im = '0;
+  end else begin : g_bf
+    // two channels in lock-step: identical input stream and latency -> identical control outputs; channel 0 drives the frame
+    // control, the overflow flags are or-ed.
+    logic                   ovf [2], cv [2];
+    logic signed [IQ_W-1:0] cre [2], cim [2];
+    for (genvar c = 0; c < 2; c++) begin : g_ch
+      logic                   w_valid, if_valid, sc_valid, fok, fw, sd, cf, cl;
+      logic signed [IQ_W-1:0] w_re, w_im, if_re, if_im, sc_re, sc_im;
+      phy_tx_weight u_w (
+        .clk, .rst, .bin_rst(fft_rst), .load(go_fire), .mode_i(w_mode[2*c +: 2]), .amp_i(w_amp[16*c +: 16]),
+        .phase_i(w_phase[16*c +: 16]), .tau_i(w_tau[17*c +: 17]),
+        .in_valid(ff_valid), .in_re(ff_re), .in_im(ff_im), .out_valid(w_valid), .out_re(w_re), .out_im(w_im)
+      );
+      phy_ifft_2048 #(.SHIFT_MASK(SHIFT_MASK)) u_ifft (
+        .clk, .rst(rst | fft_rst), .in_valid(w_valid), .in_re(w_re), .in_im(w_im),
+        .out_valid(if_valid), .out_re(if_re), .out_im(if_im)
+      );
+      phy_tx_scaler u_scale (
+        .clk, .rst, .gain, .in_valid(if_valid), .in_re(if_re), .in_im(if_im),
+        .out_valid(sc_valid), .out_re(sc_re), .out_im(sc_im)
+      );
+      phy_cp_insert u_cp (
+        .clk, .rst, .in_valid(sc_valid), .in_re(sc_re), .in_im(sc_im),
+        .frame_ok(fok), .frame_written(fw), .sym_done(sd), .overflow(ovf[c]),
+        .out_valid(cv[c]), .out_ready(iq_pull), .out_re(cre[c]), .out_im(cim[c]), .out_first(cf), .out_last(cl)
+      );
+      if (c == 0) begin : g_ctl
+        assign frame_ok = fok; assign frame_written = fw; assign sym_done = sd; assign cp_first = cf; assign cp_last = cl;
+      end
+    end
+    assign overflow = ovf[0] | ovf[1];
+    assign cp_valid = cv[0];
+    assign cp_re    = cre[0];
+    assign cp_im    = cim[0];
+    assign iq1_re   = cv[1] ? cre[1] : '0;
+    assign iq1_im   = cv[1] ? cim[1] : '0;
+  end
 
   assign iq_valid = cp_valid;
   assign iq_re    = cp_valid ? cp_re : '0;

@@ -16,7 +16,8 @@ $V/xvlog.bat -sv $RTL $TBF "$@" > xvlog.log 2>&1 || { cat xvlog.log; exit 1; }
 grep -E "^(ERROR|WARNING)" xvlog.log | grep -v "already analyzed" || true
 # generics go through an args file (cmd .bat wrappers split on "=")
 : > xelab.args; for g in $GENERIC; do echo "-generic_top $g" >> xelab.args; done
-$V/xelab.bat -debug off --timescale 1ns/1ps -f xelab.args -s "${TB}_sim$$" "$TB" > xelab.log 2>&1 || { cat xelab.log; exit 1; }
+# a locked temporary obj directory (virus scanner / leftover xsim) does not invalidate a snapshot that was built
+$V/xelab.bat -debug off --timescale 1ns/1ps -f xelab.args -s "${TB}_sim$$" "$TB" > xelab.log 2>&1 ||   { grep -q "Built simulation snapshot" xelab.log && grep -q "Could not remove the obj directory" xelab.log && ! grep -q "^ERROR" xelab.log; } ||   { cat xelab.log; exit 1; }
 OUT=$($V/xsim.bat "${TB}_sim$$" -runall)
 echo "$OUT" | grep -E "TEST|mismatch|MISMATCH|ERROR|FATAL|not cleared|!=" | head -30
 echo "$OUT" | grep -q "TEST PASSED"
