@@ -48,7 +48,7 @@ def main():
         cmd = ["wsl", "-e", wslp(os.path.abspath(a.beamd)), "estimate", wslp(fn), "--nant", "4"]
     out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.splitlines()
     rows = [l.split(",") for l in out if l and l[0].isdigit()]
-    m8c = [int(l.split("=")[1]) for l in out if l.startswith("# assigned")]
+    m8c = [int(l.split("e mod 8 =")[1].split()[0]) for l in out if l.startswith("# block") and "assigned" in l]   # energy-gated anchor path
     fails = 0
     lts = np.array([v for v, _ in ofdm_ref.preamble(1)])
     print(f"LTS positive bins (python) {int(np.sum(lts > 0))}, lag pairs python {[len(bf_anchor.LAG_PAIRS[m]) for m in bf_anchor.LAGS]}")

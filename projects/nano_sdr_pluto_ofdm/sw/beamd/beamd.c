@@ -352,13 +352,26 @@ static void dsp_init(void)
 
 struct est { double t, f, phi, amp, snr_db; long s_sync; int ok; };
 
+/* out[i] = H[i] exp(j 2 pi ks[i] d / N) over the active bins (ks = -600 .. -1, 1 .. 600): phasor recurrence, exact restart every 64 bins */
+static void rot_bins(const cplx *H, cplx *out, double d)
+{
+	double a = 2 * M_PI * d / NFFT;
+	cplx step = cexpj(a), ph = {1, 0};
+	for (int i = 0; i < NACT; i++) {
+		if ((i & 63) == 0) ph = cexpj(a * g_ks[i]);
+		else if (g_ks[i] - g_ks[i - 1] == 2) ph = cmul(ph, step);   /* the DC gap */
+		out[i] = cmul(H[i], ph);
+		ph = cmul(ph, step);
+	}
+}
+
 /* delay of H(k) ~ exp(-j 2 pi ks d / N): lag cascade 1, 16, 128 + least squares of the residual phase (bf_anchor.delay_est) */
 static double delay_est(const cplx *H)
 {
 	static cplx Hc[NACT];
 	double d = 0;
 	for (int l = 0; l < 3; l++) {
-		for (int i = 0; i < NACT; i++) Hc[i] = cmul(H[i], cexpj(2 * M_PI * g_ks[i] * d / NFFT));
+		rot_bins(H, Hc, d);
 		cplx acc = {0, 0};
 		for (int n = 0; n < g_lag_n[l]; n++) {
 			cplx p = cconjmul(Hc[g_lag_p[l][2 * n]], Hc[g_lag_p[l][2 * n + 1]]);
@@ -367,7 +380,8 @@ static double delay_est(const cplx *H)
 		d += -atan2(acc.im, acc.re) * NFFT / (2 * M_PI * LAGS[l]);
 	}
 	cplx m = {0, 0};
-	for (int i = 0; i < NACT; i++) { Hc[i] = cmul(H[i], cexpj(2 * M_PI * g_ks[i] * d / NFFT)); m.re += Hc[i].re; m.im += Hc[i].im; }
+	rot_bins(H, Hc, d);
+	for (int i = 0; i < NACT; i++) { m.re += Hc[i].re; m.im += Hc[i].im; }
 	double sw = 0, swk = 0;
 	for (int i = 0; i < NACT; i++) { double w = sqrt(cabs2(Hc[i])); sw += w; swk += w * g_ks[i]; }
 	double kc = swk / sw, num = 0, den = 0;
@@ -388,12 +402,18 @@ static struct est estimate(const cplx *x, long n, long s_sync, cplx psum)
 	long w0 = s_sync + SYM - 32;
 	if (w0 < 0 || w0 + NFFT > n)
 		return e;
-	for (int i = 0; i < NFFT; i++) Y[i] = cmul(x[w0 + i], cexpj(-2 * M_PI * e.f * i / FS));
+	cplx rot = cexpj(-2 * M_PI * e.f / FS), ph = {1, 0};   /* phasor recurrence instead of sin/cos per sample (renormalized) */
+	for (int i = 0; i < NFFT; i++) {
+		if ((i & 255) == 0) ph = cexpj(-2 * M_PI * e.f * i / FS);
+		Y[i] = cmul(x[w0 + i], ph);
+		ph = cmul(ph, rot);
+	}
 	fft(Y, NFFT);
 	for (int i = 0; i < NACT; i++) H[i] = (cplx){Y[g_act[i]].re / g_lts[i], Y[g_act[i]].im / g_lts[i]};
 	double d = delay_est(H);
 	cplx g = {0, 0};
-	for (int i = 0; i < NACT; i++) { H[i] = cmul(H[i], cexpj(2 * M_PI * g_ks[i] * d / NFFT)); g.re += H[i].re / NACT; g.im += H[i].im / NACT; }
+	rot_bins(H, H, d);
+	for (int i = 0; i < NACT; i++) { g.re += H[i].re / NACT; g.im += H[i].im / NACT; }
 	double nz = 0;
 	for (int i = 0; i < NACT; i++) nz += cabs2((cplx){H[i].re - g.re, H[i].im - g.im}) / NACT;
 	e.t = w0 + d;
@@ -418,7 +438,7 @@ static int detect(const cplx *x, long n, long *start, cplx *psum, int max, doubl
 	}
 	int cnt = 0;
 	long seg0 = -1, last = -100000;
-	double mx = 0;
+	double mx = 0, last_mx = 0;
 	static double M[1 << 20];
 	static cplx PP[1 << 20];
 	if (m > (1 << 20)) m = 1 << 20;
@@ -442,12 +462,59 @@ static int detect(const cplx *x, long n, long *start, cplx *psum, int max, doubl
 				cplx ps = {0, 0};
 				for (long k = seg0; k < i; k++)
 					if (M[k] > 0.9 * mx) { s_end = k; ps.re += PP[k].re; ps.im += PP[k].im; }
-				if (s_end - last > 3 * SYM && cnt < max) {
-					start[cnt] = s_end; psum[cnt] = ps; cnt++; last = s_end;
+				if (s_end - last > 3 * SYM) {
+					if (cnt < max) { start[cnt] = s_end; psum[cnt] = ps; cnt++; last = s_end; last_mx = mx; }
+				} else if (mx > last_mx && cnt > 0) {   /* closer than 3 symbols: keep the stronger one (a weak false peak in a
+				                                           packet tail must not hide the next packet) */
+					start[cnt - 1] = s_end; psum[cnt - 1] = ps; last = s_end; last_mx = mx;
 				}
 			}
 			seg0 = -1;
 		}
+	}
+	return cnt;
+}
+
+/* Energy-gated detection (bf_anchor.detect_gated): power of 256-sample blocks straight from int16, noise floor = 20th percentile block, bursts =
+ * runs of blocks above GATE x floor; only a window around each burst start is converted to complex (into x[] at the same indices) and
+ * searched with Schmidl-Cox. ~10x cheaper than detect() over the whole capture and blind to noise / narrowband interference between
+ * packets (whose half-symbol correlation gives false peaks). */
+#define GBLK 256
+#define GATE 4.0
+static int cmp_dbl(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return (x > y) - (x < y); }
+static int detect_gated(const int16_t *raw, cplx *x, long n, long *start, cplx *psum, int max, double thr)
+{
+	static double E[(1 << 21) / GBLK], Es[(1 << 21) / GBLK];
+	long nb = n / GBLK;
+	if (nb > (long)(sizeof E / sizeof E[0])) nb = sizeof E / sizeof E[0];
+	for (long b = 0; b < nb; b++) {
+		int64_t s = 0;
+		const int16_t *p = raw + 2 * b * GBLK;
+		for (int k = 0; k < 2 * GBLK; k++) s += (int32_t)p[k] * p[k];
+		E[b] = (double)s;
+	}
+	memcpy(Es, E, nb * sizeof E[0]);
+	qsort(Es, nb, sizeof Es[0], cmp_dbl);
+	double floor_ = Es[nb / 5], lim = GATE * floor_;   /* 20th percentile: noise even when packets fill half the capture */
+	int cnt = 0;
+	long last_end = -1;
+	for (long b = 0; b < nb && cnt < max; b++) {
+		if (E[b] <= lim || (b > 0 && E[b - 1] > lim)) continue;            /* burst start: first block above the gate */
+		long w0 = b * GBLK - 2 * GBLK, w1 = b * GBLK + 2 * SYM + 2 * LHALF;   /* sync plateau + room for the LTS of estimate() */
+		if (w0 < last_end) w0 = last_end;                                 /* overlapping windows: continue the previous one */
+		if (w0 < 0) w0 = 0;
+		if (w1 > n) w1 = n;
+		if (w1 - w0 < 2 * LHALF + CP) continue;
+		for (long i = w0; i < w1; i++) x[i] = (cplx){raw[2 * i], raw[2 * i + 1]};
+		long st[8];
+		cplx ps[8];
+		int k = detect(x + w0, w1 - w0, st, ps, 8, thr);
+		for (int j = 0; j < k && cnt < max; j++) {
+			long s = st[j] + w0;
+			if (cnt > 0 && s - start[cnt - 1] <= 3 * SYM) continue;          /* same packet found from two windows */
+			start[cnt] = s; psum[cnt] = ps[j]; cnt++;
+		}
+		last_end = w1;
 	}
 	return cnt;
 }
@@ -652,6 +719,7 @@ struct opts {
 	double seconds;                      /* run time, 0 = until Ctrl-C */
 	long bus_test;                       /* leader: send this many PARAMS frames over JP5 and check the follower's answers */
 	double bus_rate;                     /* bus test: frames per second (0 = as fast as the answers come) */
+	int profile;                         /* anchor: print the time of each processing stage per block */
 	int fb;                              /* feedback: 0 UDP (lab relay), 1 radio burst (fbmodem.h) */
 	double fb_freq, fb_gain;
 	char relay[64], log[128], file[200];
@@ -700,6 +768,7 @@ static int parse(int argc, char **argv, struct opts *o)
 		else if (ARG("--fb-gain")) o->fb_gain = atof(argv[++i]);
 		else if (!strcmp(argv[i], "--equal-gain")) o->mrt = 0;
 		else if (!strcmp(argv[i], "-v")) o->verbose = 1;
+		else if (!strcmp(argv[i], "--profile")) o->profile = 1;
 		else if (argv[i][0] != '-' && !o->file[0]) snprintf(o->file, sizeof o->file, "%s", argv[i]);
 		else { fprintf(stderr, "unknown option %s\n", argv[i]); return -1; }
 	}
@@ -1000,11 +1069,15 @@ struct epoch_res { int ok, m8; struct est e[NANT_MAX]; struct est data; };
 static int g_ld = LD_DEFAULT;
 
 /* find the soundings of one epoch in a capture (energy -> windows -> Schmidl-Cox / estimate), times relative to x[0] */
-static int anchor_epoch(const cplx *x, long n, int nant, struct epoch_res *r)
+static double g_t_det, g_t_est;                       /* anchor profile: detect / estimate time of the last block (s) */
+static int anchor_epoch(const int16_t *raw, cplx *x, long n, int nant, struct epoch_res *r)
 {
 	static long st[64];
 	static cplx ps[64];
-	int nd = detect(x, n, st, ps, 64, 0.2);
+	double ta = now_s();
+	int nd = detect_gated(raw, x, n, st, ps, 64, 0.2);
+	g_t_det = now_s() - ta;
+	g_t_est = 0;
 	memset(r, 0, sizeof *r);
 	int m8, i0 = -1;
 	long tt[64];
@@ -1016,6 +1089,7 @@ static int anchor_epoch(const cplx *x, long n, int nant, struct epoch_res *r)
 	/* the data packet of this epoch (all channels with the weights in force): sync start ~ S0 + (LD - slot0) */
 	for (int i = i0 + nant; i < nd; i++)
 		if (labs(st[i] - st[i0] - (g_ld - SLOT_BASE[0])) < 64) { r->data = estimate(x, n, st[i], ps[i]); break; }
+	g_t_est = now_s() - ta - g_t_det;
 	r->ok = 1;
 	return 1;
 }
@@ -1041,7 +1115,16 @@ static int run_estimate(const struct opts *o)
 		printf("%d,%ld,%.6f,%.4f,%.6f,%.6f,%.3f\n", i, st[i], e.t, e.f, e.phi, e.amp, e.snr_db);
 	}
 	struct epoch_res r;
-	if (anchor_epoch(x, n, o->nant, &r)) printf("# assigned: e mod 8 = %d\n", r.m8);
+	/* the anchor path (energy-gated detection) block by block, as on the board */
+	long blk = o->cap < n ? o->cap : n;
+	for (long b0 = 0; b0 + blk <= n; b0 += blk) {
+		if (anchor_epoch(raw + 2 * b0, x + b0, blk, o->nant, &r)) {
+			printf("# block at %ld: assigned, e mod 8 = %d", b0, r.m8);
+			for (int a = 0; a < o->nant; a++) printf("  t%d %.4f snr %.1f", a, r.e[a].t + b0, r.e[a].snr_db);
+			printf("  data %s\n", r.data.ok ? "found" : "-");
+		} else
+			printf("# block at %ld: no sounding pattern\n", b0);
+	}
 	return 0;
 }
 
@@ -1087,30 +1170,37 @@ static int run_anchor(const struct opts *o)
 	       o->nant, o->epoch_ms, o->D, o->relay);
 	signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
 	double t0 = now_s(), t_ep0 = -1;
-	long ep_cnt = -1, nmsg = 0;
+	long ep_cnt = -1, nmsg = 0, nskip = 0;
 	int last_m8 = -1;
 	uint32_t seq = 0;
 	while (!g_stop && !(o->seconds > 0 && now_s() - t0 > o->seconds)) {
 		size_t want = (size_t)o->cap * 4, got = 0;
+		/* drop the blocks queued in the kernel while we were processing: the capture must be fresh, otherwise the epoch number
+		 * (wall clock + e mod 8) can be off by 8 and the parameters are predicted for the wrong epoch */
+		dev_set(s.dev, "buffer/enable", "0");
+		dev_set(s.dev, "buffer/enable", "1");
+		double trd = now_s();
 		while (got < want && !g_stop) {
 			ssize_t r = read(s.fd, (uint8_t *)raw + got, want - got);
 			if (r < 0) { if (errno == EINTR) continue; fprintf(stderr, "read: %s\n", strerror(errno)); return 1; }
 			got += (size_t)r;
 		}
 		double tw = now_s(), tp0 = tw;
-		for (long i = 0; i < o->cap; i++) x[i] = (cplx){raw[2 * i], raw[2 * i + 1]};
+		double t_read = tw - trd, t_conv = 0;              /* conversion now happens inside the gated detection, per window */
 		struct epoch_res r;
-		if (!anchor_epoch(x, o->cap, o->nant, &r)) {
+		if (!anchor_epoch(raw, x, o->cap, o->nant, &r)) {
 			if (o->verbose) printf("[%6.1fs] no sounding pattern in this block\n", tw - t0);
 			continue;
 		}
-		/* epoch counter on the A1 grid: wall clock gives the number of epochs since the last one, e mod 8 the exact value */
-		if (ep_cnt < 0) { ep_cnt = r.m8; t_ep0 = tw; }
+		/* epoch counter on the A1 grid: wall clock gives the number of epochs since the last one, e mod 8 the exact value.
+		 * Wall-clock time of the measured tick: the end of the capture minus the samples after the tick. */
+		double t_meas = tw - (o->cap - (r.e[0].t - slot_of(0, (uint32_t)r.m8))) / FS;
+		if (ep_cnt < 0) { ep_cnt = r.m8; t_ep0 = t_meas; }
 		else {
-			long approx = ep_cnt + lround((tw - t_ep0) / C.period_s);
+			long approx = ep_cnt + lround((t_meas - t_ep0) / C.period_s);
 			long best = approx;
 			for (long k = approx - 4; k <= approx + 4; k++) if (((k % 8) + 8) % 8 == r.m8 && labs(k - approx) < labs(best - approx) + (((best % 8) + 8) % 8 != r.m8 ? 100 : 0)) best = k;
-			ep_cnt = best; t_ep0 = tw - 0;   /* re-anchor the wall-clock estimate */
+			ep_cnt = best; t_ep0 = t_meas;   /* re-anchor the wall-clock estimate */
 		}
 		(void)last_m8; last_m8 = r.m8;
 		double slot[NANT_MAX], t[NANT_MAX];
@@ -1121,6 +1211,14 @@ static int run_anchor(const struct opts *o)
 			r.e[a].t = r.e[a].t - base;                       /* arrival relative to the tick (samples) */
 		}
 		ctl_update(&C, r.e, t, slot);
+		/* parameters for the tick of epoch (measured + D) must reach A1 (UDP relay) and A2 (JP5) before that tick; a block that took too
+		 * long is only used by the filters (before ctl_params: no NCO step is booked for a message that is not sent) */
+		double late_s = now_s() - t_meas - ((o->D - 0.5) * C.period_s - 5e-3);
+		if (late_s > 0) {
+			nskip++;
+			if (o->verbose) printf("[%6.1fs] processing too slow by %.1f ms: no parameters for this epoch\n", tw - t0, late_s * 1e3);
+			continue;
+		}
 		struct chpar pr[2][2];
 		double nco_new[2];
 		double t_tick = (ep_cnt + o->D) * C.period_s, t_data = t_tick + o->ld / FS;
@@ -1153,6 +1251,9 @@ static int run_anchor(const struct opts *o)
 			fprintf(lf, ",%.3f,%.2f\n", r.data.ok ? r.data.amp : 0.0, r.data.ok ? r.data.snr_db : 0.0);
 			fflush(lf);
 		}
+		if (o->profile)
+			printf("[%6.1fs] profile: read %.1f  convert %.1f  detect %.1f  estimate %.1f  control+send %.1f  total %.1f ms\n", tw - t0,
+			       t_read * 1e3, t_conv * 1e3, g_t_det * 1e3, g_t_est * 1e3, proc - (t_conv + g_t_det + g_t_est) * 1e3, proc);
 		if (o->verbose || nmsg % 20 == 1)
 			printf("[%6.1fs] epoch %ld (mod8 %d) snr %.1f/%.1f/%.1f/%.1f dB  amp %.1f/%.1f  data amp %.1f (%+.1f dB vs ant0)  dnu %.2f Hz  proc %.1f ms\n",
 			       tw - t0, ep_cnt, r.m8, r.e[0].snr_db, r.e[1].snr_db, o->nant > 2 ? r.e[2].snr_db : 0, o->nant > 3 ? r.e[3].snr_db : 0,
@@ -1161,6 +1262,7 @@ static int run_anchor(const struct opts *o)
 	}
 	stream_close(&s);
 	if (lf) fclose(lf);
+	printf("anchor done: %ld parameter messages, %ld blocks too slow for epoch + %d (filters only)\n", nmsg, nskip, o->D);
 	return 0;
 }
 
@@ -1274,6 +1376,7 @@ static int run_ctltest(const struct opts *o)
 int main(int argc, char **argv)
 {
 	if (argc < 2) { usage(); return 1; }
+	setvbuf(stdout, NULL, _IOLBF, 0);                    /* line-buffered: logs are readable while a run is in progress (ssh pipes) */
 	dsp_init();
 	struct opts o;
 	if (strcmp(argv[1], "selftest") && parse(argc, argv, &o) < 0) { usage(); return 1; }

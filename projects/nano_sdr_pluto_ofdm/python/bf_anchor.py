@@ -75,6 +75,7 @@ def detect(r, thr=0.2, min_gap=3 * SYMBOL_LEN):
     M = np.abs(P) ** 2 / np.maximum(R, 1e-12) ** 2
     above = np.where(M > thr)[0]
     out = []
+    last_mx = 0.0
     i = 0
     while i < len(above):
         j = i
@@ -87,7 +88,38 @@ def detect(r, thr=0.2, min_gap=3 * SYMBOL_LEN):
             s_end = int(plat[-1])
             if not out or s_end - out[-1][0] > min_gap:
                 out.append((s_end, P[plat].sum()))
+                last_mx = mx
+            elif mx > last_mx:                    # closer than min_gap: keep the stronger one (a weak false peak in a packet tail
+                out[-1] = (s_end, P[plat].sum())  # must not hide the next packet)
+                last_mx = mx
         i = j + 1
+    return out
+
+
+GBLK, GATE = 256, 4.0
+
+
+def detect_gated(r, thr=0.2):
+    """Energy-gated detection (the anchor path of beamd): power of 256-sample blocks, noise floor = 20th percentile block, bursts = runs
+    of blocks above GATE x floor; Schmidl-Cox only in a window around each burst start. Blind to noise / narrowband interference between
+    packets and ~10x cheaper than detect() over the whole capture. -> same format as detect()."""
+    nb = len(r) // GBLK
+    E = np.sum(np.abs(r[:nb * GBLK].reshape(nb, GBLK)) ** 2, axis=1)
+    lim = GATE * np.sort(E)[nb // 5]
+    out, last_end = [], -1
+    for b in range(nb):
+        if E[b] <= lim or (b > 0 and E[b - 1] > lim):
+            continue
+        w0 = max(b * GBLK - 2 * GBLK, last_end, 0)
+        w1 = min(b * GBLK + 2 * SYMBOL_LEN + 2 * L, len(r))
+        if w1 - w0 < 2 * L + CP_LEN:
+            continue
+        for s, P in detect(r[w0:w1]):
+            s += w0
+            if out and s - out[-1][0] <= 3 * SYMBOL_LEN:
+                continue
+            out.append((s, P))
+        last_end = w1
     return out
 
 
