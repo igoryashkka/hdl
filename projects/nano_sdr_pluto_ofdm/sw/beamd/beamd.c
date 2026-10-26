@@ -650,6 +650,8 @@ struct opts {
 	double freq, tx_gain, rx_gain, epoch_ms;
 	int nant, D, data, ld, port, mrt, nsyms, verbose, data_mask, hold;
 	double seconds;                      /* run time, 0 = until Ctrl-C */
+	long bus_test;                       /* leader: send this many PARAMS frames over JP5 and check the follower's answers */
+	double bus_rate;                     /* bus test: frames per second (0 = as fast as the answers come) */
 	int fb;                              /* feedback: 0 UDP (lab relay), 1 radio burst (fbmodem.h) */
 	double fb_freq, fb_gain;
 	char relay[64], log[128], file[200];
@@ -664,7 +666,8 @@ static void usage(void)
 	       "  --no-data (soundings only)  --data-mask 1|2|3 (channels of the data packet, 3)  --hold (ignore the anchor: unit weights)\n"
 	       "  --nant 4|2  --equal-gain  --port N (5005)  --relay IP[:PORT] (anchor: where to send)\n"
 	       "  --fb udp|radio (feedback path, udp)  --fb-freq HZ (2470e6)  --fb-gain DB (B transmit level of the burst, -20)\n"
-	       "  --log PREFIX (/tmp/beamd)  --cap SAMPLES (anchor capture block, 524288)  --epoch0 N (100)  --seconds S  -v\n");
+	       "  --log PREFIX (/tmp/beamd)  --cap SAMPLES (anchor capture block, 524288)  --epoch0 N (100)  --seconds S  -v\n"
+	       "  --bus-test N       leader: send N PARAMS frames over JP5 (the follower must run), count answers, compare the epoch numbers\n");
 }
 static int parse(int argc, char **argv, struct opts *o)
 {
@@ -690,6 +693,8 @@ static int parse(int argc, char **argv, struct opts *o)
 		else if (ARG("--data-mask")) o->data_mask = atoi(argv[++i]) & 3;
 		else if (!strcmp(argv[i], "--hold")) o->hold = 1;
 		else if (ARG("--seconds")) o->seconds = atof(argv[++i]);
+		else if (ARG("--bus-test")) o->bus_test = atol(argv[++i]);
+		else if (ARG("--bus-rate")) o->bus_rate = atof(argv[++i]);
 		else if (ARG("--fb")) o->fb = !strcmp(argv[++i], "radio");
 		else if (ARG("--fb-freq")) o->fb_freq = atof(argv[++i]);
 		else if (ARG("--fb-gain")) o->fb_gain = atof(argv[++i]);
@@ -784,6 +789,70 @@ static int queue_packet(struct stream *s, size_t blk, uint16_t flags, uint32_t l
 	return 0;
 }
 
+/* JP5 bus stress test (M2): PARAMS frames with a varying payload (weights off, so harmless), one per answer. The follower's answer carries
+ * its epoch number; it is compared with the leader's epoch read right after the answer (a tick between the two reads gives a +-1 difference). */
+static int bus_test(const struct opts *o, uint8_t seq)
+{
+	uint8_t frm[64];
+	long sent = 0, ans_ok_prev = 0, no_answer = 0, hist[5] = {0};  /* leader epoch - follower epoch: <-1, -1, 0, +1, >1 */
+	long last_d = 1000, nev = 0;
+	uint32_t st[64];
+	if (snapshot(st, 64) < 0) { fprintf(stderr, "snapshot timeout\n"); return 1; }
+	uint16_t pok = st[25] & 0xFFFF, pbad = st[25] >> 16;      /* previous 16-bit hardware counters */
+	long ok_tot = 0, bad_tot = 0;                              /* accumulated across the 16-bit wrap */
+	double t0 = now_s(), tlog = t0;
+	signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
+	printf("bus test: %ld PARAMS frames, SCLK %.2f MHz\n", o->bus_test, FS * 4 / 24 / 1e6);
+	while (!g_stop && sent < o->bus_test) {
+		struct chpar ch[2] = {{.amp = (uint16_t)(sent * 7), .phase = (uint16_t)(sent * 13), .tau = (int16_t)(sent * 29), .ctrl = 0,
+		                       .rho = (int32_t)(sent * 1013904223u), .inc = (uint32_t)(sent * 1664525u)},
+		                      {.amp = (uint16_t)(~sent), .phase = (uint16_t)(sent >> 3), .tau = (int16_t)(-sent), .ctrl = 0,
+		                       .rho = (int32_t)(sent * 22695477u), .inc = (uint32_t)(sent * 69069u)}};
+		size_t n = params_frame(frm, seq++, 0xFFFFFFFFu, ch);
+		for (size_t i = 0; i < 48; i += 4) {
+			uint32_t w = 0;
+			for (int k = 0; k < 4; k++) if (i + k < n) w |= (uint32_t)frm[i + k] << (8 * k);
+			wreg(R_CFG(28 + i / 4), w);
+		}
+		wreg(R_CFG(3), 1u | (12u << 16) | ((uint32_t)n << 24));
+		wreg(R_CTRL, P_BUSSEND);
+		sent++;
+		int got = 0;
+		for (int w = 0; w < 4000 && !g_stop; w++) {
+			if (snapshot(st, 64) < 0) continue;
+			uint16_t cok = st[25] & 0xFFFF, cbad = st[25] >> 16;
+			ok_tot += (uint16_t)(cok - pok); bad_tot += (uint16_t)(cbad - pbad); pok = cok; pbad = cbad;
+			if (!(st[29] & 1) && (ok_tot + bad_tot) >= sent - no_answer) {      /* frame and answer done */
+				if (ok_tot > ans_ok_prev) {
+					uint32_t fe = (st[45] >> 24) | ((st[46] & 0xFFFFFFu) << 8);            /* epoch number inside the answer (bytes 7..10) */
+					long d = (long)(int32_t)(st[16] - fe);
+					hist[d < -1 ? 0 : d > 1 ? 4 : d + 2]++;
+					if (d != last_d && nev++ < 60)
+						printf("  [%7.3fs] frame %ld: epoch difference %ld -> %ld (leader %u, follower %u)\n", now_s() - t0, sent, last_d, d, st[16], fe);
+					last_d = d;
+				}
+				ans_ok_prev = ok_tot;
+				got = 1;
+				break;
+			}
+		}
+		if (!got) no_answer++;
+		if (o->bus_rate > 0)
+			usleep((useconds_t)(1e6 / o->bus_rate));
+		double t = now_s();
+		if (t - tlog >= 2.0) {
+			tlog = t;
+			printf("[%6.1fs] sent %ld  answers ok %ld bad %ld  no answer %ld   epoch diff (leader - follower) -1/0/+1: %ld/%ld/%ld\n", t - t0, sent,
+			       ok_tot, bad_tot, no_answer, hist[1], hist[2], hist[3]);
+		}
+	}
+	double dt = now_s() - t0;
+	printf("bus test done: sent %ld in %.1f s (%.0f frames/s), answers ok %ld, bad %ld, no answer %ld\n", sent, dt, sent / dt, ok_tot, bad_tot, no_answer);
+	printf("epoch number leader - follower at the answer: <-1: %ld   -1: %ld   0: %ld   +1: %ld   >+1: %ld\n", hist[0], hist[1], hist[2], hist[3], hist[4]);
+	printf("(counters are 16 bit and wrap at 65536; the follower's own rx_ok / crc_err are in its status line)\n");
+	return 0;
+}
+
 static int run_tx(const struct opts *o, int role /* 1 leader, 2 follower, 3 single */)
 {
 	if (regs_open() < 0) return 1;
@@ -819,6 +888,10 @@ static int run_tx(const struct opts *o, int role /* 1 leader, 2 follower, 3 sing
 			wreg(R_CFG(3), 1u | (12u << 16) | ((uint32_t)n << 24));
 			wreg(R_CTRL, P_BUSSEND);
 		}
+	}
+	if (role == 1 && o->bus_test > 0) {
+		usleep(300000);                                  /* the SET_EPOCH frame and the next tick */
+		return bus_test(o, seq);
 	}
 	size_t blk = 8 * (2 + (BYTES_RANGE + 7) / 8);
 	struct stream s;
