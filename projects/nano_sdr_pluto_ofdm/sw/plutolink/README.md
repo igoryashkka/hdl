@@ -113,3 +113,6 @@ register/DMA integration have **not yet run on a board**. Things most likely to 
   both CRC32 recomputed. Reassembly on the PC: `phy_sim/experiments/image_rx.py`.
 * Goodput: the rx 1 s line and the rx summary print Mbit/s of error-free payload; the tx summary prints the payload rate.
 * Board scripts for the LVDS Pluto (`projects/nano_sdr_pluto_ofdm_tx7020`): `bringup.ps1`, `tx.ps1`, `link_test.ps1`.
+* `--cont` (tx): continuous / streaming frame (PHY cfg 2 bit 5, bitstream v0.10.1+): `--nsyms` up to 255 (MAX RANGE) / 145 (MAX RATE) in one
+  frame, no pause between frames. Without it the packet mode is unchanged (1..8 symbols).
+* The config word now also writes the BF channel mask (TX1) and tick-phase compensation; the single-channel build ignores these bits.

@@ -61,6 +61,9 @@ run tb_phy_regs_axil
 run tb_phy_rx_axis_top
 run tb_phy_tx_axis_top
 # beamforming (TestTask006): weights, tau tracking, two-channel TX, EPOCH, JP5 bus, two boards with the DAC streams checked bit-exact in python
+# continuous / streaming frames (ring buffer, frame length from the DMA header; up to 255 symbols)
+run tb_phy_tx_cont MODE=0
+run tb_phy_tx_cont MODE=1
 run tb_phy_tx_weight
 run tb_phy_tau_track
 run tb_phy_tx_top "CODED=1 MODE=0 BF=1"

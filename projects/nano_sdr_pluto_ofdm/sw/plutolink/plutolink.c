@@ -61,7 +61,7 @@
 
 #define APP_MAGIC      0x4B4E4C50u    /* 'PLNK' */
 #define APP_HDR        32
-#define APP_MAX        (8 * BYTES_UNCODED)
+#define APP_MAX        65536                  /* continuous frames: up to 65535 payload bytes */
 #define SYM_LEN        2192
 #define REG_FEATURE_W  31     /* status word 31: bit0 = coded PHY */
 
@@ -519,6 +519,7 @@ static void stream_close(struct stream *s)
  * ==================================================================================================================== */
 struct opts {
 	int nsyms;
+	int cont;                 /* TX: continuous / streaming frame (PHY cfg 2 bit 5): the frame is not limited to 8 symbols */
 	double freq_hz;
 	double tx_gain_db;
 	double rx_gain_db;
@@ -553,7 +554,7 @@ static void usage(void)
 	puts("plutolink " VERSION "\n"
 	     "usage: plutolink <tx|rx|diag|selftest> [options]\n"
 	     "common:\n"
-	     "  --freq HZ          carrier (default 2450e6)       --nsyms N     OFDM data symbols per packet, 1..8 (default 2)\n"
+	     "  --freq HZ          carrier (default 2450e6)       --nsyms N     OFDM data symbols per packet, 1..8 (default 2; 1..255 with --cont)\n"
 	     "  --seed N           PRBS run seed (default 1; must match on both boards)\n"
 	     "  --log PREFIX       log file prefix (default plutolink_<role>_<time>)      --stats SEC  status interval (default 1)\n"
 	     "  --duration SEC     stop after SEC seconds         --count N     stop after N packets (tx: sent, rx: received)\n"
@@ -561,6 +562,7 @@ static void usage(void)
 	     "tx:\n"
 	     "  --gain DB          TX attenuation setting, 0 .. -89.75 (default -40)\n"
 	     "  --rate PPS         packet rate limit (default: as fast as the PHY gap allows)\n"
+	     "  --cont             TX: continuous / streaming frame (PHY with CONT support): long frames of up to 255 symbols\n"
 	     "  --gap SAMPLES      minimum gap between frames in samples (default 16384)\n"
 	     "  --sweep FROM:TO:STEP:COUNT[:LOOPS]   TX gain sweep, COUNT packets per step (each step gets its own step_id)\n"
 	     "  --file PATH        send PATH in chunks (repeated) instead of PRBS: chunk index in step_id, file size in prbs_seed\n"
@@ -597,6 +599,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 #define ARG(name) (!strcmp(a, name) && i + 1 < argc)
 		if (ARG("--freq")) o->freq_hz = atof(argv[++i]);
 		else if (ARG("--nsyms")) o->nsyms = atoi(argv[++i]);
+		else if (!strcmp(a, "--cont")) o->cont = 1;
 		else if (ARG("--seed")) o->run_seed = strtoul(argv[++i], NULL, 0);
 		else if (ARG("--log")) snprintf(o->log_prefix, sizeof o->log_prefix, "%s", argv[++i]);
 		else if (ARG("--stats")) o->stats_s = atof(argv[++i]);
@@ -635,8 +638,13 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		}
 	}
 	g_mode = o->mode ? 1 : 0;
-	if (o->nsyms < 1 || o->nsyms > 8) {
-		fprintf(stderr, "--nsyms must be 1..8\n");
+	int maxsyms = o->cont ? 255 : 8;
+	if (o->nsyms < 1 || o->nsyms > maxsyms) {
+		fprintf(stderr, "--nsyms must be 1..%d%s\n", maxsyms, o->cont ? "" : " (1..255 with --cont)");
+		return -1;
+	}
+	if (o->cont && (size_t)o->nsyms * (g_mode ? BYTES_CODED : BYTES_RANGE) > 65535) {
+		fprintf(stderr, "--nsyms too large for one DMA packet (65535 bytes): MAX RATE 145, MAX RANGE 255\n");
 		return -1;
 	}
 	return 0;
@@ -954,7 +962,7 @@ static int run_tx(const struct opts *o)
 	usleep(1000);
 	wreg(REG_CFG0 + 0, 16384);
 	wreg(REG_CFG0 + 4, o->gap_samples);
-	wreg(REG_CFG0 + 8, (uint32_t)(1 | (o->mode << 1)));            /* ENABLE | MODE (0 = MAX RANGE, 1 = MAX RATE) */
+	wreg(REG_CFG0 + 8, (uint32_t)(1 | (o->mode << 1) | (1u << 2) | (1u << 4) | ((uint32_t)o->cont << 5)));   /* ENABLE | MODE (0 = MAX RANGE, 1 = MAX RATE); BF build: channel mask 01 (TX1) + tick-phase compensation, ignored by the single-channel build */
 	wreg(REG_CTRL, 0);
 	usleep(1000);
 	wreg(REG_CTRL, 2);

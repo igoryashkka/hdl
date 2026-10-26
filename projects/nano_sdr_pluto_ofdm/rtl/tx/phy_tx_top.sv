@@ -11,6 +11,10 @@
 // Timing contract: after a packet is complete, the first sample is available after ~2 symbol compute times; samples of one
 //   frame are then continuous at the pull rate (credit logic in phy_tx_frame_ctrl guarantees banks are filled in time as
 //   long as the processing clock is >= 2x the sample rate).
+// CONT = 1 at runtime (input `cont`, CODED = 1 only): continuous / streaming frame. The packet buffer becomes a ring: the packet
+//   starts after 64 bytes are buffered, the writer is back-pressured when the ring is full, the reader waits for data. The frame
+//   length (symbols) comes from `cont_nb` (bytes, known from the DMA header) instead of from the end of the write, so one frame can
+//   carry up to 255 symbols (65535 bytes) with the same [sync][LTS][header] overhead. `cont` is sampled with the first byte.
 // BF = 1 (beamforming, TestTask006): two output channels sharing everything up to the IFFT input mux; per channel
 //   phy_tx_weight (mode/amp/phase/tau latched at the packet start, go_fire) -> IFFT -> scaler -> CP buffer. Both channels run
 //   in lock-step (same latency), channel 0 drives the frame control. go_en gates the packet start (timed launch).
@@ -28,6 +32,8 @@ module phy_tx_top
   input  logic                   rst,
   input  logic [15:0]            gain,           // Q2.14, 16384 = 1.0
   input  logic                   cfg_mode,       // coded PHY: 0 = MAX RANGE (QPSK, 1/2), 1 = MAX RATE (16-QAM, 5/6)
+  input  logic                   cont,           // continuous / streaming frame (sampled with the first byte; CODED = 1)
+  input  logic [15:0]            cont_nb,        // packet length in bytes (valid from before the first byte; used with `cont`)
   // packet bytes
   input  logic                   s_valid,
   output logic                   s_ready,
@@ -60,41 +66,78 @@ module phy_tx_top
   // ===================================================================== packet buffer (receive side)
   logic [7:0]     bbuf [BUF_BYTES];
   logic [BAW-1:0] wr_ptr;
-  logic [BAW:0]   pkt_len;                    // bytes stored
+  localparam int CW = 17;                      // byte counters (65535-byte continuous frames)
+  localparam int PREFILL = 64;                 // bytes buffered before a continuous frame starts
+  logic [CW-1:0]  wr_cnt;                      // bytes written of the packet
+  logic [BAW-1:0] rd_ptr;                      // ring read address
+  logic           pkt_taken;                   // the frame controller took the packet (reader running)
+  logic           cont_r, wr_fin;              // packet is continuous / all its bytes are written
+  logic [CW-1:0]  pkt_len;                    // bytes stored
   logic [9:0]     sym_byte_cnt;
   logic [7:0]     nsyms_acc, pkt_nsyms;
   logic           wr_mode, pkt_mode;          // mode of the packet being written / of the packet being sent
   wire  [9:0]     bps_w = CODED ? (wr_mode ? 10'd450 : 10'd135) : 10'(BYTES_PER_OFDM);   // payload bytes per OFDM symbol
-  wire            wr_mode_n = (wr_ptr == '0) ? cfg_mode : wr_mode;                          // the first byte already counts with the new mode
+  wire            wr_first  = (wr_cnt == '0);
+  wire            cont_en   = cont & CODED;
+  wire            wr_mode_n = wr_first ? cfg_mode : wr_mode;                          // the first byte already counts with the new mode
   logic           pkt_valid;                  // a complete packet is waiting for / being sent
   logic           rd_busy;                    // reader is streaming the packet out of the buffer
   logic           go_ready;
   logic           rd_done;
   logic           tx_started_out;
 
-  assign s_ready = ~pkt_valid;
+  logic [CW-1:0]  rd_idx;
+  wire            cont_w = wr_first ? cont_en : cont_r;
+  wire            ring_full = cont_r && ((wr_cnt - rd_idx) >= CW'(BUF_BYTES));
+  // continuous frame length in symbols = ceil(cont_nb / bytes per symbol): exact reciprocal multiplication (K = ceil(2^26 / bps),
+  // checked for every input 0 .. 65535), 3 pipeline stages; cont_nb and cfg_mode are static for many cycles before the first byte
+  logic [16:0]    nc_x;
+  logic [19:0]    nc_k;
+  logic [36:0]    nc_p;
+  logic [7:0]     nsyms_c_r;
+  logic [2:0]     cw_sh;                        // continuous frame: first byte seen >= 3 cycles ago (length valid)
+  always_ff @(posedge clk) begin
+    nc_x      <= 17'(cont_nb) + (cfg_mode ? 17'd449 : 17'd134);
+    nc_k      <= cfg_mode ? 20'd149131 : 20'd497103;
+    nc_p      <= nc_x * nc_k;
+    nsyms_c_r <= nc_p[33:26];
+    if (rst) cw_sh <= '0; else cw_sh <= {cw_sh[1:0], cont_r};
+  end
+  assign s_ready = !wr_fin && !(pkt_valid && !cont_r) && !ring_full;
   wire   wr_en   = s_valid & s_ready;
-  wire   wr_end  = s_last | (wr_ptr == BAW'(BUF_BYTES - 1));
+  wire   wr_end  = s_last | (!cont_w && (wr_ptr == BAW'(BUF_BYTES - 1)));
 
   always_ff @(posedge clk) begin
     if (wr_en) bbuf[wr_ptr] <= s_data;
-    if (wr_en && wr_ptr == '0) wr_mode <= cfg_mode;
+    if (wr_en && wr_first) wr_mode <= cfg_mode;
     if (rst) begin
       wr_ptr <= '0; pkt_len <= '0; sym_byte_cnt <= '0; nsyms_acc <= '0; pkt_nsyms <= '0;
-      pkt_valid <= 1'b0; pkt_trunc <= 1'b0; wr_mode <= 1'b1;
+      pkt_valid <= 1'b0; pkt_trunc <= 1'b0; wr_mode <= 1'b1; wr_cnt <= '0; wr_fin <= 1'b0; cont_r <= 1'b0;
     end else begin
       if (wr_en) begin
         if (sym_byte_cnt == (CODED ? (wr_mode_n ? 10'd449 : 10'd134) : 10'(BYTES_PER_OFDM - 1))) begin sym_byte_cnt <= '0; nsyms_acc <= nsyms_acc + 1'b1; end
         else sym_byte_cnt <= sym_byte_cnt + 1'b1;
+        wr_cnt <= wr_cnt + 1'b1;
+        if (wr_first) begin
+          cont_r <= cont_en;
+          if (cont_en) pkt_len <= CW'(cont_nb);
+        end
         if (wr_end) begin
-          pkt_len   <= (BAW+1)'(wr_ptr) + 1'b1;
-          pkt_nsyms <= nsyms_acc + 1'b1;
+          if (!cont_w) begin
+            pkt_len   <= wr_cnt + 1'b1;
+            pkt_nsyms <= nsyms_acc + 1'b1;
+            pkt_trunc <= ~s_last;
+          end else wr_fin <= 1'b1;
           pkt_valid <= 1'b1;
-          pkt_trunc <= ~s_last;
-        end else wr_ptr <= wr_ptr + 1'b1;
+        end else begin
+          wr_ptr <= (wr_ptr == BAW'(BUF_BYTES - 1)) ? '0 : wr_ptr + 1'b1;            // ring (only reached by continuous frames)
+          if (cont_w && (wr_cnt + 1'b1 >= CW'(PREFILL))) pkt_valid <= 1'b1;
+        end
       end
+      if (cont_r && !cw_sh[2]) pkt_nsyms <= nsyms_c_r;   // continuous frame: length in symbols from the pipeline above (window of the first 3 cycles;
+                                                         // cont_nb / cfg_mode must be stable from 3 cycles before the first byte until then)
       if (pkt_valid && !rd_busy && rd_done) begin       // buffer fully read out -> accept the next packet
-        pkt_valid <= 1'b0; wr_ptr <= '0; sym_byte_cnt <= '0; nsyms_acc <= '0;
+        pkt_valid <= 1'b0; wr_ptr <= '0; wr_cnt <= '0; wr_fin <= 1'b0; cont_r <= 1'b0; sym_byte_cnt <= '0; nsyms_acc <= '0;
       end
     end
   end
@@ -105,8 +148,7 @@ module phy_tx_top
   logic go_valid;
 
   // the reader starts together with the controller (go handshake); `started_pkt` marks the packet as taken
-  logic pkt_taken;
-  assign go_valid = pkt_valid && !pkt_taken && (go_en || !BF);
+  assign go_valid = pkt_valid && !pkt_taken && (go_en || !BF) && (!cont_r || cw_sh[2]);
 
   phy_tx_frame_ctrl u_ctrl (
     .clk, .rst,
@@ -118,27 +160,28 @@ module phy_tx_top
   );
 
   // ===================================================================== reader: buffer -> scrambler -> byte FIFO
-  logic [BAW:0]  total_bytes;                 // padded length
-  logic [BAW:0]  rd_idx;
+  logic [CW-1:0] total_bytes;                 // padded length
   logic          a_v, a_first, a_last, a_pad;
   logic [7:0]    ram_q;
   logic          scr_v, scr_first, scr_last; logic [7:0] scr_d;
   logic          bf_wr_ready, bf_rd_valid, bf_rd_ready; logic [7:0] bf_rd_data; logic [3:0] bf_count;
 
-  wire rd_issue = rd_busy && (rd_idx != total_bytes) && ((bf_count + 4'(a_v) + 4'(scr_v)) < 4'd6);
+  wire rd_have  = !cont_r || wr_fin || (rd_idx < wr_cnt);   // continuous frame: the byte must be written already (after the last byte: padding)
+  wire rd_issue = rd_busy && (rd_idx != total_bytes) && rd_have && ((bf_count + 4'(a_v) + 4'(scr_v)) < 4'd6);
 
   always_ff @(posedge clk) begin
-    ram_q <= bbuf[rd_idx[BAW-1:0]];
+    ram_q <= bbuf[rd_ptr];
     rd_done <= 1'b0;
     if (rst) begin
-      rd_busy <= 1'b0; rd_idx <= '0; total_bytes <= '0; a_v <= 1'b0; pkt_taken <= 1'b0;
+      rd_busy <= 1'b0; rd_idx <= '0; rd_ptr <= '0; total_bytes <= '0; a_v <= 1'b0; pkt_taken <= 1'b0;
     end else begin
       if (go_valid && go_ready) begin
         pkt_taken   <= 1'b1;
         pkt_mode    <= wr_mode;
         rd_busy     <= 1'b1;
         rd_idx      <= '0;
-        total_bytes <= (BAW+1)'(pkt_nsyms) * (CODED ? (wr_mode ? (BAW+1)'(450) : (BAW+1)'(135)) : (BAW+1)'(BYTES_PER_OFDM));
+        rd_ptr      <= '0;
+        total_bytes <= CW'(pkt_nsyms) * (CODED ? (wr_mode ? CW'(450) : CW'(135)) : CW'(BYTES_PER_OFDM));
       end
       a_v <= rd_issue;
       if (rd_issue) begin
@@ -146,11 +189,12 @@ module phy_tx_top
         a_last  <= (rd_idx == total_bytes - 1'b1);
         a_pad   <= (rd_idx >= pkt_len);
         rd_idx  <= rd_idx + 1'b1;
+        rd_ptr  <= (rd_ptr == BAW'(BUF_BYTES - 1)) ? '0 : rd_ptr + 1'b1;
       end
       if (rd_busy && rd_idx == total_bytes && !a_v && !scr_v) begin
         rd_busy <= 1'b0; rd_done <= 1'b1;
       end
-      if (rd_done) pkt_taken <= 1'b0;
+      if (rd_done) begin pkt_taken <= 1'b0; rd_idx <= '0; rd_ptr <= '0; end
     end
   end
 

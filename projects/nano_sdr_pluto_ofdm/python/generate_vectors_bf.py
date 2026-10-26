@@ -159,3 +159,14 @@ f_par = bf_ref.params_frame(2, BFS["target"], BFS["a2"][0], BFS["a2"][1])
 wr("tbbf_frames.mem", [len(f_set)] + f_set + [len(f_par)] + f_par, 2)
 json.dump({**BFS, "payload": pay}, open(os.path.join(OUT, "tbbf_meta.json"), "w"))
 print("tbbf frames", len(f_set), len(f_par))
+
+# ------------------------------------------------------------------ continuous / streaming frames (tb_phy_tx_cont): per mode
+import tx_ref
+for mode, na, tag in ((0, 5400, "cq"), (1, 13500, "cr")):
+    lens = [na, 200 if mode == 0 else 500, 270 if mode == 0 else 900, 40]           # cont (> ring), normal, cont, cont shorter than the pre-fill
+    for k, n in enumerate(lens):
+        pk = [rng.getrandbits(8) for _ in range(n)]
+        wr(f"{tag}_pkt{k}_in.mem", pk, 2)
+        fr = tx_ref.tx_frame(pk, code="ldpc", mode=mode)
+        wr(f"{tag}_pkt{k}_exp.mem", [((a & 0xFFFF) << 16) | (b & 0xFFFF) for a, b in fr], 8)
+    print("cont", tag, [len(tx_ref.tx_frame([0] * n, code="ldpc", mode=mode)) // 2192 for n in lens], "symbols per frame")

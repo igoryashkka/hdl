@@ -25,6 +25,7 @@
 //     and the packet starts at the strobe with index `launch` after an EPOCH tick (index 0 = first strobe after the tick; a packet that
 //     is not ready at that strobe waits for the next epoch, counted in launch_miss).
 //   cfg 2 0x18 [0] ENABLE [1] MODE [3:2] default channel mask (reset 01) [4] tick-phase compensation (reset 1)
+//              [5] CONT: continuous / streaming frame (up to 65535 bytes per packet, ring buffer; set it between packets, CODED only)
 //   cfg 3 0x1C [1:0] role (0 off, 1 leader, 2 follower) [2] safe mute (outputs 0 while stale) [15:8] stale limit (ticks, 0 = off)
 //              [23:16] bus SCLK half period (clocks, reset 12) [29:24] bus frame length (bytes)
 //   cfg 4..7 / 8..11 (0x20 / 0x30) channel 0 / 1: {phase, amp} {ctrl (bit0 weights, bit1 NCO), tau} rho inc   (python/bf_ref.py units)
@@ -109,6 +110,8 @@ module phy_tx_axis_top #(
   wire [31:0]        gap_w    = cfg[63:32];
   wire               enable_w = cfg[64];
   wire               mode_w   = cfg[65];
+  wire               cont_w   = cfg[69];           // continuous / streaming frame (cfg 2 bit 5)
+  reg [15:0]         nb_lat   = 16'd0;             // packet length of the DMA header (for the continuous frame length)
 
   reg rst_r = 1'b1;                       // local reset copy (AD9361 reset has a large fanout) + PS soft reset
   always @(posedge clk) rst_r <= rst | soft_rst;
@@ -153,6 +156,7 @@ module phy_tx_axis_top #(
         case (st)
           S_HDR: begin
             if (hdr_ok) begin
+              nb_lat <= s_axis_data[15:0];
               st <= (f_ext && s_axis_data[19]) ? S_HDR2 : S_BODY; rem <= s_axis_data[15:0]; left <= 4'd0; got_last <= 1'b0;
               f_mask  <= f_ext ? s_axis_data[17:16] : cfg[67:66];
               f_sound <= f_ext & s_axis_data[18];
@@ -189,7 +193,7 @@ module phy_tx_axis_top #(
   wire [33:0] w_tau;
 
   phy_tx_top #(.CODED(CODED), .BF(BF)) u_phy (
-    .clk(clk), .rst(rst_r), .gain(gain_w), .cfg_mode(mode_w),
+    .clk(clk), .rst(rst_r), .gain(gain_w), .cfg_mode(mode_w), .cont(cont_w), .cont_nb(nb_lat),
     .s_valid(byte_valid), .s_ready(phy_ready), .s_data(word[7:0]), .s_last(last_byte),
     .iq_pull(dac_valid), .iq_re(iq_re), .iq_im(iq_im), .iq_valid(iq_valid),
     .underflow(underflow), .overflow(overflow), .pkt_trunc(trunc), .pkt_done(pkt_done),

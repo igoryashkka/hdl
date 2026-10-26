@@ -18,7 +18,8 @@ param(
   [int]$Samples = 2000000,      # recorded samples (30.72 MS/s)
   [int]$GainSh = 4,             # digital gain 2^GainSh in front of the decoder's detector (its energy gate expects ADC rms ~ 300+)
   [string]$Name = "",
-  [string]$File = "",           # send this file (e.g. a picture) instead of PRBS; the PC reassembles it and compares
+  [string]$File = "",
+  [string]$TxExtra = "",         # extra plutolink tx options, e.g. "--gap 12000"           # send this file (e.g. a picture) instead of PRBS; the PC reassembles it and compares
 
   [string]$Password = "analog"
 )
@@ -39,6 +40,7 @@ function Step($t) { Write-Host "`n== $t" -ForegroundColor Cyan }
 $txSeconds = [math]::Ceiling($Samples / 30.72e6) + 6
 $txLog = Join-Path $logs "${Name}_tx_console.txt"
 $txCmd = "cd /tmp && ./plutolink tx --freq $Freq --nsyms $Nsyms --mode $Mode --gain $Gain --rate $Rate --duration $txSeconds --log $Name"
+if ($TxExtra) { $txCmd += " $TxExtra" }
 if ($File) {
   $File = (Resolve-Path $File).Path        # absolute: the decoder runs from the phy_sim folder
   $fname = Split-Path -Leaf $File

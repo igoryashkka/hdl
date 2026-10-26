@@ -31,7 +31,7 @@ module tb_phy_tx_top #(parameter int CODED = 0, parameter int MODE = 1, paramete
   logic s_valid = 0, s_ready, s_last = 0; logic [7:0] s_data = 0;
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
-  phy_tx_top #(.CODED(CODED), .BF(BF)) dut (.clk, .rst, .gain, .cfg_mode, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
+  phy_tx_top #(.CODED(CODED), .BF(BF)) dut (.clk, .rst, .gain, .cfg_mode, .cont(1'b0), .cont_nb(16'd0), .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
                   .underflow, .overflow, .pkt_trunc, .pkt_done, .busy, .go_en, .go_fire, .w_mode, .w_amp, .w_phase, .w_tau, .iq1_re, .iq1_im);
 
   int errors = 0, nout = 0, npd = 0, gap_errs = 0;

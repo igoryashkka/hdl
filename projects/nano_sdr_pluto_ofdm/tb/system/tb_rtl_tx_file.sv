@@ -20,7 +20,7 @@ module tb_rtl_tx_file #(
   logic s_valid = 0, s_ready, s_last = 0; logic [7:0] s_data = 0;
   logic iq_pull = 0, iq_valid, underflow, overflow, pkt_trunc, pkt_done, busy;
   logic signed [15:0] iq_re, iq_im;
-  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .cfg_mode, .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
+  phy_tx_top #(.CODED(CODED)) dut (.clk, .rst, .gain, .cfg_mode, .cont(1'b0), .cont_nb(16'd0), .s_valid, .s_ready, .s_data, .s_last, .iq_pull, .iq_re, .iq_im, .iq_valid,
                   .underflow, .overflow, .pkt_trunc, .pkt_done, .busy,
                   .go_en(1'b1), .go_fire(), .w_mode(4'd0), .w_amp(32'd0), .w_phase(32'd0), .w_tau(34'd0), .iq1_re(), .iq1_im());
 

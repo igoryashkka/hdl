@@ -173,3 +173,16 @@ JP5 (2×10, крок 2.54 мм) на платі не запаяний. З'єдн
 ### Дві плати (M2 / M3)
 
 A1: `beamd leader`, A2: `beamd follower`, B: `beamd anchor` (4 антени), ПК: `python bf_relay.py`. Бітстрім BF на обох A.
+
+## Continuous (потоковий) режим і швидкість (v0.10.1)
+
+Пакетний режим (за замовчуванням): кадр ≤ 8 символів, пауза між кадрами; continuous: довгий кадр до 255 символів без паузи.
+```
+.\link_test.ps1 -Freq 1400000000 -Mode 1 -Nsyms 64 -TxExtra "--cont --gap 0" -Rate 0 -Gain -10 -RxGain 40 -Samples 3000000 -File .	est_data_100k.bin -Name cont1
+.\link_test.ps1 -Freq 1400000000 -Mode 1 -Nsyms 8 -TxExtra "--gap 12000" -Rate 0 -Gain -10 -RxGain 40 -Samples 6000000 -File .	est_image.png -Name f1400
+```
+`test_data_100k.bin` — 100000 випадкових байт (seed 7: `random.seed(7)`, `bytes(random.getrandbits(8) ...)`, файл не комітиться, `*.bin` в ignore).
+Результати (кабель TX1 → 30 дБ → RX1): пакетний MAX RATE 8 символів 23.2 Мбіт/с (157/157 цілих на 1.4 ГГц, 119/156 на 2.45 ГГц через завади Wi-Fi),
+continuous MAX RATE 64 символи 47.9 Мбіт/с (19/19, файл 100 КБ ідентичний). Повна таблиця і висновки: `../nano_sdr_pluto_ofdm/STATUS.md` (v0.10.1).
+Рівні для кабелю з 30 дБ: TX −10 дБ, RX 40 дБ (TX −20 / RX 20 дає лише шум). Якщо плата A після заливки бітстріму не відповідає на
+192.168.2.1, перевірте `config.txt` (перший рядок `[NETWORK]`) і перезапустіть живлення.
